@@ -2,6 +2,9 @@
   "businessId": "sherpaprompt",
   "businessName": "SherpaPrompt",
   "phoneNumber": "+19713511965",
+  "features": {
+    "allowInterruptions": true
+  },
   "database": {
     "collectionName": "knowledge_base_sherpaprompt",
     "vectorIndexName": "vector_index_sherpaprompt"

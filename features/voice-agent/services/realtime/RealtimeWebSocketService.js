@@ -128,6 +128,23 @@ class RealtimeWebSocketService extends EventEmitter {
         }
       );
 
+      // Get business-specific configuration for interruption handling
+      let allowInterruptions = true; // Default: allow interruptions (backward compatible)
+      try {
+        if (this.tenantContextManager && this.businessConfigService) {
+          const businessId = this.tenantContextManager.getBusinessId(sessionId);
+          if (businessId) {
+            const businessConfig = this.businessConfigService.getBusinessConfig(businessId);
+            if (businessConfig?.features?.allowInterruptions !== undefined) {
+              allowInterruptions = businessConfig.features.allowInterruptions;
+              console.log(`🔧 [RealtimeWS] Interruption mode for ${businessId}: ${allowInterruptions ? 'ENABLED' : 'DISABLED (turn-based)'}`);
+            }
+          }
+        }
+      } catch (error) {
+        console.warn('⚠️ [RealtimeWS] Failed to read allowInterruptions config, using default (true):', error.message);
+      }
+
       // Store session
       const sessionData = {
         sessionId,
@@ -138,6 +155,10 @@ class RealtimeWebSocketService extends EventEmitter {
         isResponding: false,  // Track if AI is currently responding
         activeResponseId: null,  // Track active response ID for cancellation
         suppressAudio: false, // Drop any in-flight audio after interruption until next response starts
+        allowInterruptions: allowInterruptions, // Configurable interruption behavior
+        droppedAudioDuringResponse: false, // Track if we dropped any audio packets during response
+        cooldownActive: false, // Cooldown period after agent finishes (drop residual audio from interruptions)
+        cooldownTimer: null, // Timer reference for cooldown period
         createdAt: Date.now(),
         hasBufferedAudio: false,
         pendingClose: false // Track if session should be closed after current response completes
@@ -196,14 +217,14 @@ class RealtimeWebSocketService extends EventEmitter {
    * Configure Realtime API session with tools and settings
    */
   async configureSession(sessionData) {
-    const { openaiWs } = sessionData;
+    const { openaiWs, allowInterruptions } = sessionData;
     
     const config = {
       type: 'session.update',
       session: {
         modalities: ['text', 'audio'],
         instructions: this.getSystemPrompt(sessionData.sessionId),
-        voice: 'echo',
+        voice: 'ash',  
         input_audio_format: 'pcm16',
         output_audio_format: 'pcm16',
         input_audio_transcription: {
@@ -211,11 +232,11 @@ class RealtimeWebSocketService extends EventEmitter {
         },
         turn_detection: {
           type: 'server_vad',
-          threshold: 0.3,
+          threshold: 0.4,  // Increased from 0.3 to reduce background noise sensitivity (range: 0.0-1.0, higher = less sensitive)
           prefix_padding_ms: 100,
           silence_duration_ms: 700,
           create_response: true,  // Enable automatic response creation (semantic VAD)
-          interrupt_response: true  // Allow interruptions
+          interrupt_response: allowInterruptions  // Configurable: allow/disallow interruptions
         },
         tools: this.defineTools(sessionData.sessionId),
         tool_choice: 'auto',
@@ -224,6 +245,7 @@ class RealtimeWebSocketService extends EventEmitter {
     };
 
     console.log('⚙️ [RealtimeWS] Configuring session with', config.session.tools.length, 'tools');
+    console.log(`⚙️ [RealtimeWS] Interruption handling: ${allowInterruptions ? 'ENABLED' : 'DISABLED (turn-based mode)'}`);
     openaiWs.send(JSON.stringify(config));
   }
 
@@ -518,11 +540,30 @@ Without calling this function, the information is NOT saved and will NOT appear 
    * Handle messages from client
    */
   async handleClientMessage(sessionData, message) {
-    const { openaiWs, sessionId } = sessionData;
+    const { openaiWs, sessionId, isResponding, allowInterruptions, cooldownActive } = sessionData;
 
     switch (message.type) {
       case 'audio':
-        // Forward audio to OpenAI
+        // Turn-based mode: Drop incoming audio when agent is speaking and interruptions are disabled
+        if (!allowInterruptions && isResponding) {
+          // Silently drop the audio packet - agent is speaking in turn-based mode
+          // This prevents the caller from interrupting the agent
+          console.log('🚫 [RealtimeWS] Dropping audio packet - agent speaking in turn-based mode');
+          
+          // Mark that we dropped audio during this response
+          sessionData.droppedAudioDuringResponse = true;
+          
+          return;
+        }
+        
+        // Turn-based mode: Drop residual audio during cooldown period after agent finishes
+        // This prevents queued interruption attempts from being processed
+        if (!allowInterruptions && cooldownActive) {
+          console.log('🧊 [RealtimeWS] Dropping residual audio packet during cooldown period');
+          return;
+        }
+        
+        // Forward audio to OpenAI (normal mode or when agent is not speaking)
         if (openaiWs.readyState === WebSocket.OPEN) {
           openaiWs.send(JSON.stringify({
             type: 'input_audio_buffer.append',
@@ -532,6 +573,11 @@ Without calling this function, the information is NOT saved and will NOT appear 
         break;
 
       case 'input_audio_buffer.commit':
+        // Turn-based mode: Drop commit when agent is speaking and interruptions are disabled
+        if (!allowInterruptions && isResponding) {
+          return;
+        }
+        
         // Commit audio buffer
         if (openaiWs.readyState === WebSocket.OPEN) {
           openaiWs.send(JSON.stringify({
@@ -541,6 +587,12 @@ Without calling this function, the information is NOT saved and will NOT appear 
         break;
 
       case 'response.cancel':
+        // Only allow cancellation if interruptions are enabled
+        if (!allowInterruptions) {
+          console.log('🚫 [RealtimeWS] Cancellation blocked - interruptions disabled for session:', sessionId);
+          return;
+        }
+        
         // Cancel current response (for interruptions)
         if (openaiWs.readyState === WebSocket.OPEN) {
           openaiWs.send(JSON.stringify({
@@ -572,33 +624,37 @@ Without calling this function, the information is NOT saved and will NOT appear 
       case 'input_audio_buffer.speech_started':
         console.log('🎤 [RealtimeWS] Speech started:', sessionId);
 
-        // --- BARGE-IN LOGIC ---
-        // 1. Instantly clear any buffered AI audio in the bridge to prevent it from reaching Twilio
-        if (this.bridgeService && sessionData.twilioCallSid) {
-          console.log(`[RealtimeWS] Clearing output buffer on bridge for call SID: ${sessionData.twilioCallSid}`);
-          this.bridgeService.clearOutputBuffer(sessionData.twilioCallSid);
-        }
-        
-        // 2. Cancel any ongoing AI response (user is interrupting)
-        // Only send cancel if we have an active response (not just finished)
-        if (sessionData.isResponding && sessionData.activeResponseId) {
-          console.log('🛑 [RealtimeWS] User interrupted - canceling AI response:', sessionData.activeResponseId);
-          try {
-            sessionData.openaiWs.send(JSON.stringify({
-              type: 'response.cancel'
-            }));
-            sessionData.isResponding = false;
-            sessionData.activeResponseId = null;
-          } catch (error) {
-            console.log('⚠️ [RealtimeWS] Cancel failed (response may have completed):', error.message);
-            // Still reset state even if cancel failed
-            sessionData.isResponding = false;
-            sessionData.activeResponseId = null;
+        // --- BARGE-IN LOGIC (Only when interruptions are enabled) ---
+        // Note: In turn-based mode (allowInterruptions=false), VAD is disabled during agent responses,
+        // so this event won't fire during agent speech - only during user's legitimate turn
+        if (sessionData.allowInterruptions && sessionData.isResponding) {
+          // 1. Instantly clear any buffered AI audio in the bridge to prevent it from reaching Twilio
+          if (this.bridgeService && sessionData.twilioCallSid) {
+            console.log(`[RealtimeWS] Clearing output buffer on bridge for call SID: ${sessionData.twilioCallSid}`);
+            this.bridgeService.clearOutputBuffer(sessionData.twilioCallSid);
           }
-        }
+          
+          // 2. Cancel any ongoing AI response (user is interrupting)
+          // Only send cancel if we have an active response (not just finished)
+          if (sessionData.isResponding && sessionData.activeResponseId) {
+            console.log('🛑 [RealtimeWS] User interrupted - canceling AI response:', sessionData.activeResponseId);
+            try {
+              sessionData.openaiWs.send(JSON.stringify({
+                type: 'response.cancel'
+              }));
+              sessionData.isResponding = false;
+              sessionData.activeResponseId = null;
+            } catch (error) {
+              console.log('⚠️ [RealtimeWS] Cancel failed (response may have completed):', error.message);
+              // Still reset state even if cancel failed
+              sessionData.isResponding = false;
+              sessionData.activeResponseId = null;
+            }
+          }
 
-        // 3. Suppress any in-flight audio chunks arriving after interruption
-        sessionData.suppressAudio = true;
+          // 3. Suppress any in-flight audio chunks arriving after interruption
+          sessionData.suppressAudio = true;
+        }
         
         this.sendToClient(sessionData, {
           type: 'speech_started'
@@ -607,6 +663,7 @@ Without calling this function, the information is NOT saved and will NOT appear 
 
       case 'input_audio_buffer.speech_stopped':
         console.log('🔇 [RealtimeWS] Speech stopped:', sessionId);
+        
         this.sendToClient(sessionData, {
           type: 'speech_stopped'
         });
@@ -628,31 +685,63 @@ Without calling this function, the information is NOT saved and will NOT appear 
         break;
 
       case 'conversation.item.input_audio_transcription.failed':
-        console.log('❌ [RealtimeWS] Transcription failed:', event.error);
+        console.log('❌ [RealtimeWS] Transcription failed (OpenAI API issue):', event.error);
         this.sendToClient(sessionData, {
           type: 'transcript_error',
           error: event.error
         });
         
-        // Proactively inject a clarification message to prevent emergency default
-        // We need to do this BEFORE OpenAI generates its response
-        try {
-          const clarificationMessage = {
-            type: 'conversation.item.create',
-            item: {
-              type: 'message',
-              role: 'user',
-              content: [{
-                type: 'input_text',
-                text: '[AUDIO_UNCLEAR] - You did not hear anything. Do NOT make up, guess, or assume ANY information. Do NOT use example names like Alex, David, Sarah. Do NOT use example phone numbers like 123-456-7890. Do NOT call validate_phone_number with made-up data. Simply respond: "I\'m sorry, I couldn\'t hear that clearly. Could you please repeat [what you were asking for]?"'
-              }]
+        // Only cancel response if we had dropped audio (interruption attempt)
+        // If no audio was dropped, this is a legitimate user turn - let OpenAI respond based on audio context
+        if (sessionData.droppedAudioDuringResponse) {
+          console.log('🚫 [RealtimeWS] Canceling response - this was from an interruption attempt');
+          try {
+            sessionData.openaiWs.send(JSON.stringify({
+              type: 'response.cancel'
+            }));
+            sessionData.isResponding = false;
+            sessionData.droppedAudioDuringResponse = false;
+            
+            // Re-enable VAD for next legitimate user input
+            if (!sessionData.allowInterruptions) {
+              sessionData.openaiWs.send(JSON.stringify({
+                type: 'session.update',
+                session: {
+                  turn_detection: {
+                    type: 'server_vad',
+                    threshold: 0.4,  // Higher threshold = less sensitive to background noise
+                    prefix_padding_ms: 100,
+                    silence_duration_ms: 700,
+                    create_response: true,
+                    interrupt_response: false
+                  }
+                }
+              }));
             }
-          };
-          
-          console.log('🔄 [RealtimeWS] Injecting clarification message to prevent emergency default and hallucination');
-          sessionData.openaiWs.send(JSON.stringify(clarificationMessage));
-        } catch (error) {
-          console.error('❌ [RealtimeWS] Error injecting clarification message:', error);
+          } catch (error) {
+            console.warn('⚠️ [RealtimeWS] Failed to cancel interruption response:', error.message);
+          }
+        } else {
+          console.log('ℹ️ [RealtimeWS] Transcription failed but no interruption - letting agent respond based on audio context');
+        }
+        break;
+
+      case 'response.created':
+        // CRITICAL: Disable VAD immediately when response starts (before any audio)
+        // This prevents OpenAI from detecting speech during agent's turn
+        if (!sessionData.allowInterruptions && !sessionData.isResponding) {
+          console.log('🔇 [RealtimeWS] Disabling VAD immediately (response starting in turn-based mode)');
+          sessionData.isResponding = true;  // Mark as responding early
+          try {
+            sessionData.openaiWs.send(JSON.stringify({
+              type: 'session.update',
+              session: {
+                turn_detection: null  // Disable VAD before audio starts
+              }
+            }));
+          } catch (error) {
+            console.warn('⚠️ [RealtimeWS] Failed to disable VAD early:', error.message);
+          }
         }
         break;
 
@@ -661,9 +750,12 @@ Without calling this function, the information is NOT saved and will NOT appear 
         // First audio of a new response unsuppresses playback
         if (!sessionData.isResponding) {
           sessionData.suppressAudio = false;
+          sessionData.droppedAudioDuringResponse = false; // Reset for new response
+          sessionData.isResponding = true;
         }
-        sessionData.isResponding = true;  // Track that AI is responding
-        sessionData.activeResponseId = event.response_id || 'active';  // Track active response
+        
+        // Track active response ID
+        sessionData.activeResponseId = event.response_id || 'active';
         
         // Drop audio if suppression is active (post-interruption residuals)
         if (!sessionData.suppressAudio) {
@@ -693,6 +785,22 @@ Without calling this function, the information is NOT saved and will NOT appear 
         
         // Add to conversation history
         this.stateManager.addMessage(sessionId, 'assistant', event.transcript);
+        
+        // CRITICAL FIX: Clear buffer HERE (before response.done) if we dropped audio
+        // This prevents OpenAI from detecting queued speech after response completes
+        // NOTE: We DON'T clear the droppedAudioDuringResponse flag here - we need it in response.done
+        if (!sessionData.allowInterruptions && sessionData.droppedAudioDuringResponse) {
+          console.log('🧹 [RealtimeWS] Clearing audio buffer BEFORE response completes - dropped packets during turn-based mode');
+          try {
+            sessionData.openaiWs.send(JSON.stringify({
+              type: 'input_audio_buffer.clear'
+            }));
+            console.log('✅ [RealtimeWS] Audio buffer cleared proactively');
+            // DON'T clear the flag here - we need it to trigger cooldown in response.done
+          } catch (error) {
+            console.warn('⚠️ [RealtimeWS] Failed to clear buffer proactively:', error.message);
+          }
+        }
         break;
 
       case 'response.function_call_arguments.done':
@@ -702,11 +810,84 @@ Without calling this function, the information is NOT saved and will NOT appear 
         await this.handleFunctionCall(sessionData, event);
         break;
 
+      case 'response.cancelled':
+        console.log('🚫 [RealtimeWS] Response was cancelled');
+        // Response was cancelled (likely due to transcription failure)
+        // State should already be reset by the cancellation handler
+        // Just log it for visibility
+        break;
+
       case 'response.done':
         console.log('✅ [RealtimeWS] Response completed');
         sessionData.isResponding = false;  // AI finished responding
         sessionData.activeResponseId = null;  // Clear active response ID
         sessionData.suppressAudio = false; // Clear suppression at end of response
+        
+        // Turn-based mode: Start cooldown period to drop residual audio from interruption attempts
+        // Buffer was already cleared in audio_transcript.done
+        if (!sessionData.allowInterruptions && sessionData.droppedAudioDuringResponse) {
+          console.log('⏳ [RealtimeWS] Starting 600ms cooldown to drop residual audio from interruptions');
+          sessionData.cooldownActive = true;
+          
+          // Clear any existing cooldown timer
+          if (sessionData.cooldownTimer) {
+            clearTimeout(sessionData.cooldownTimer);
+          }
+          
+          // Set cooldown timer to re-enable VAD after delay
+          sessionData.cooldownTimer = setTimeout(() => {
+            console.log('🔊 [RealtimeWS] Cooldown complete - re-enabling VAD for user turn');
+            sessionData.cooldownActive = false;
+            sessionData.cooldownTimer = null;
+            
+            // Re-enable VAD now that residual audio has been dropped
+            try {
+              sessionData.openaiWs.send(JSON.stringify({
+                type: 'session.update',
+                session: {
+                  turn_detection: {
+                    type: 'server_vad',
+                    threshold: 0.4,  // Higher threshold = less sensitive to background noise
+                    prefix_padding_ms: 100,
+                    silence_duration_ms: 700,
+                    create_response: true,
+                    interrupt_response: false  // Keep false for turn-based mode
+                  }
+                }
+              }));
+              console.log('✅ [RealtimeWS] VAD re-enabled successfully');
+            } catch (error) {
+              console.warn('⚠️ [RealtimeWS] Failed to re-enable VAD:', error.message);
+            }
+          }, 600); // 600ms cooldown - enough to drop residual packets
+          
+          // Clear the flag after starting cooldown
+          sessionData.droppedAudioDuringResponse = false;
+        } else if (!sessionData.allowInterruptions) {
+          // No audio was dropped during response, re-enable VAD immediately
+          console.log('🔊 [RealtimeWS] Re-enabling VAD after agent response (turn-based mode)');
+          try {
+            sessionData.openaiWs.send(JSON.stringify({
+              type: 'session.update',
+              session: {
+                turn_detection: {
+                  type: 'server_vad',
+                  threshold: 0.4,  // Higher threshold = less sensitive to background noise
+                  prefix_padding_ms: 100,
+                  silence_duration_ms: 700,
+                  create_response: true,
+                  interrupt_response: false  // Keep false for turn-based mode
+                }
+              }
+            }));
+          } catch (error) {
+            console.warn('⚠️ [RealtimeWS] Failed to re-enable VAD:', error.message);
+          }
+        }
+        
+        // Clear the flag if it wasn't already cleared
+        sessionData.droppedAudioDuringResponse = false;
+        
         this.sendToClient(sessionData, {
           type: 'response_done'
         });
@@ -1543,6 +1724,13 @@ Without calling this function, the information is NOT saved and will NOT appear 
     
     if (sessionData) {
       console.log('🗑️ [RealtimeWS] Closing session:', sessionId);
+      
+      // Clean up any active cooldown timer
+      if (sessionData.cooldownTimer) {
+        clearTimeout(sessionData.cooldownTimer);
+        sessionData.cooldownTimer = null;
+        console.log('🧹 [RealtimeWS] Cleared cooldown timer for closing session');
+      }
       
       // If this is a Twilio call, hang up the call legs
       if (sessionData.twilioCallSid && this.bridgeService) {

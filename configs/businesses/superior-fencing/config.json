@@ -8,7 +8,8 @@
     "ragEnabled": false,
     "appointmentBookingEnabled": false,
     "emergencyCallHandling": true,
-    "basicInfoCollection": true
+    "basicInfoCollection": true,
+    "allowInterruptions": false
   },
   
   "database": {
