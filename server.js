@@ -62,6 +62,10 @@ app.use('/api/chained-voice', require('./features/voice-agent/routes/chained-voi
 app.use('/api/estimate', require('./features/estimator/routes/estimate'));
 app.use('/twilio', require('./features/voice-agent/routes/twilio-voice'));
 
+// Admin API (protected with API key)
+const { router: adminRouter, injectBusinessConfigService } = require('./features/voice-agent/routes/admin-api');
+app.use('/api/admin', adminRouter);
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', message: 'After Hours Call Server is running' });
@@ -72,6 +76,16 @@ const { setupRealtimeWebSocket } = require('./features/voice-agent/routes/realti
 const { setupTwilioMediaWebSocket } = require('./features/voice-agent/routes/twilio-media');
 setupRealtimeWebSocket(wss);
 setupTwilioMediaWebSocket(wssTwilio);
+
+// Initialize BusinessConfigService and inject into Admin API
+const { BusinessConfigService } = require('./shared/services/BusinessConfigService');
+const businessConfigService = new BusinessConfigService();
+businessConfigService.initialize().then(() => {
+  injectBusinessConfigService(businessConfigService);
+  console.log('✅ [Server] BusinessConfigService initialized and injected');
+}).catch(err => {
+  console.error('❌ [Server] Failed to initialize BusinessConfigService:', err);
+});
 
 // Explicit HTTP upgrade routing for WebSockets
 server.on('upgrade', (req, socket, head) => {
