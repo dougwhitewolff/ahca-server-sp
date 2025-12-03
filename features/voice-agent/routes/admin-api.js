@@ -13,14 +13,114 @@ const express = require('express');
 const router = express.Router();
 const { ConfigFileWriter } = require('../../../shared/services/ConfigFileWriter');
 const { BusinessConfigService } = require('../../../shared/services/BusinessConfigService');
+const BusinessConfig = require('../../../shared/models/BusinessConfig.model');
 
 // Initialize services
 const configWriter = new ConfigFileWriter();
 let businessConfigService = null; // Will be injected by server
 
 /**
+ * POST /api/admin/businesses/create-mongodb
+ * Create a new business configuration in MongoDB
+ */
+router.post('/businesses/create-mongodb', async (req, res) => {
+  console.log('📝 [AdminAPI] Creating new business configuration in MongoDB...');
+  
+  try {
+    const businessData = req.body;
+
+    // Validate required fields
+    const requiredFields = ['businessId', 'phoneNumber', 'businessName', 'promptRules'];
+    const missingFields = requiredFields.filter(field => !businessData[field]);
+    
+    if (missingFields.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields',
+        missingFields,
+      });
+    }
+
+    // Check if business already exists
+    const existingBusiness = await BusinessConfig.findOne({ businessId: businessData.businessId });
+    if (existingBusiness) {
+      return res.status(409).json({
+        success: false,
+        error: 'Business already exists',
+        businessId: businessData.businessId,
+        message: 'Use PUT /api/admin/businesses/:id/mongodb to update existing business',
+      });
+    }
+
+    // Create new business config
+    const businessConfig = new BusinessConfig({
+      businessId: businessData.businessId,
+      businessName: businessData.businessName,
+      phoneNumber: businessData.phoneNumber,
+      description: businessData.description || `${businessData.businessName} voice agent`,
+      features: businessData.features || {
+        ragEnabled: false,
+        appointmentBookingEnabled: false,
+        emergencyCallHandling: false,
+        basicInfoCollection: true,
+      },
+      database: businessData.database || {
+        collectionName: `knowledge_base_${businessData.businessId}`,
+        vectorIndexName: `vector_index_${businessData.businessId}`,
+      },
+      calendar: businessData.calendar || {
+        provider: 'none',
+        timezone: 'America/Denver',
+      },
+      email: businessData.email || {
+        provider: 'resend',
+        fromEmail: `info@${businessData.businessId}.com`,
+        fromName: businessData.businessName,
+      },
+      companyInfo: businessData.companyInfo || {
+        name: businessData.businessName,
+      },
+      promptConfig: businessData.promptConfig || {
+        agentName: 'Assistant',
+        agentPersonality: 'professional',
+      },
+      promptRules: businessData.promptRules,
+      knowledgeBasePath: businessData.knowledgeBasePath || `/data/businesses/${businessData.businessId}/knowledge/`,
+      status: 'active',
+      createdBy: 'automation',
+    });
+
+    // Save to MongoDB
+    await businessConfig.save();
+    console.log(`✅ [AdminAPI] Business ${businessData.businessId} created in MongoDB`);
+
+    // Reload phone mapping if BusinessConfigService is available
+    if (businessConfigService) {
+      await businessConfigService.reloadPhoneMappings();
+      console.log('🔄 [AdminAPI] Reloaded phone mapping from MongoDB');
+    }
+
+    res.status(201).json({
+      success: true,
+      businessId: businessData.businessId,
+      phoneNumber: businessData.phoneNumber,
+      message: 'Business configuration created successfully in MongoDB',
+      storageType: 'mongodb',
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('❌ [AdminAPI] Error creating business in MongoDB:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: error.message,
+    });
+  }
+});
+
+/**
  * POST /api/admin/businesses/create
- * Create a new business configuration
+ * Create a new business configuration (file system - legacy)
  */
 router.post('/businesses/create', async (req, res) => {
   console.log('📝 [AdminAPI] Creating new business configuration...');
@@ -92,7 +192,7 @@ router.post('/businesses/create', async (req, res) => {
 
     // Reload phone mapping if BusinessConfigService is available
     if (businessConfigService) {
-      await businessConfigService.loadPhoneMapping();
+      await businessConfigService.reloadPhoneMappings();
       operations.push('phone mapping reloaded');
       console.log('🔄 [AdminAPI] Reloaded phone mapping');
     }
@@ -188,7 +288,7 @@ router.put('/businesses/:businessId', async (req, res) => {
         
         // Reload phone mapping
         if (businessConfigService) {
-          await businessConfigService.loadPhoneMapping();
+          await businessConfigService.reloadPhoneMappings();
           operations.push('phone mapping reloaded');
         }
       }
@@ -253,17 +353,73 @@ router.get('/businesses/:businessId/validate', (req, res) => {
 
 /**
  * GET /api/admin/businesses/list
- * List all businesses
+ * List all businesses (MongoDB + file system)
  */
-router.get('/businesses/list', (req, res) => {
+router.get('/businesses/list', async (req, res) => {
   console.log('📋 [AdminAPI] Listing all businesses');
   
   try {
-    const result = configWriter.listBusinesses();
+    let businesses = [];
+    let mongoDBCount = 0;
+    let fileSystemCount = 0;
+    
+    // Try to get businesses from MongoDB first
+    if (businessConfigService && businessConfigService.isMongoDBEnabled()) {
+      try {
+        const mongoBusinesses = await BusinessConfig.find({ status: 'active' })
+          .select('businessId businessName phoneNumber promptConfig.agentName status createdAt')
+          .lean();
+        
+        businesses = mongoBusinesses.map(b => ({
+          id: b.businessId,
+          name: b.businessName,
+          phone: b.phoneNumber,
+          agent: b.promptConfig?.agentName || 'Assistant',
+          status: b.status,
+          createdAt: b.createdAt,
+          source: 'mongodb',
+        }));
+        
+        mongoDBCount = businesses.length;
+        console.log(`📊 [AdminAPI] Found ${mongoDBCount} businesses in MongoDB`);
+      } catch (error) {
+        console.warn('⚠️ [AdminAPI] MongoDB query failed:', error.message);
+      }
+    }
+    
+    // Also include file system businesses
+    const fileSystemResult = configWriter.listBusinesses();
+    if (fileSystemResult.success && fileSystemResult.businesses) {
+      const fileSystemBusinesses = fileSystemResult.businesses.map(b => ({
+        id: b.businessId,
+        name: b.businessName,
+        phone: b.phoneNumber,
+        agent: b.agentName,
+        status: b.status,
+        createdAt: null, // File system doesn't track creation time
+        source: 'filesystem',
+      }));
+      
+      // Merge, avoiding duplicates (MongoDB takes precedence)
+      const existingIds = new Set(businesses.map(b => b.id));
+      for (const fsb of fileSystemBusinesses) {
+        if (!existingIds.has(fsb.id)) {
+          businesses.push(fsb);
+          fileSystemCount++;
+        }
+      }
+      
+      console.log(`📊 [AdminAPI] Found ${fileSystemCount} additional businesses in file system`);
+    }
     
     res.json({
       success: true,
-      ...result,
+      businesses,
+      total: businesses.length,
+      sources: {
+        mongodb: mongoDBCount,
+        filesystem: fileSystemCount,
+      },
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
@@ -280,7 +436,7 @@ router.get('/businesses/list', (req, res) => {
  * DELETE /api/admin/businesses/:businessId
  * Delete a business configuration
  */
-router.delete('/businesses/:businessId', (req, res) => {
+router.delete('/businesses/:businessId', async (req, res) => {
   console.log(`🗑️ [AdminAPI] Deleting business: ${req.params.businessId}`);
   
   try {
@@ -315,7 +471,7 @@ router.delete('/businesses/:businessId', (req, res) => {
 
     // Reload phone mapping
     if (businessConfigService) {
-      businessConfigService.loadPhoneMapping();
+      await businessConfigService.reloadPhoneMappings();
     }
 
     res.json({

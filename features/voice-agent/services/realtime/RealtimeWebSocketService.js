@@ -48,7 +48,7 @@ class RealtimeWebSocketService extends EventEmitter {
   /**
    * Get business-specific system prompt
    */
-  getSystemPrompt(sessionId) {
+  async getSystemPrompt(sessionId) {
     try {
       // Get business ID from session
       if (this.tenantContextManager && this.businessConfigService) {
@@ -56,28 +56,35 @@ class RealtimeWebSocketService extends EventEmitter {
         console.log(`🔍 [RealtimeWS] Getting system prompt for business: ${businessId}`);
 
         if (businessId) {
-          const businessConfig = this.businessConfigService.getBusinessConfig(businessId);
+          const businessConfig = await this.businessConfigService.getBusinessConfig(businessId);
           if (businessConfig) {
-            // Try to load business-specific prompt rules
+            // First check if prompt rules are in the config object (from MongoDB)
+            if (businessConfig._promptRules && businessConfig._promptRules.realtimeSystem?.full) {
+              console.log(`✅ [RealtimeWS] Using business-specific prompt from MongoDB for: ${businessId}`);
+              console.log(`📝 [RealtimeWS] Prompt preview: ${businessConfig._promptRules.realtimeSystem.full.substring(0, 100)}...`);
+              return businessConfig._promptRules.realtimeSystem.full;
+            }
+
+            // Fallback: Try to load from file system (for legacy businesses)
             const fs = require('fs');
             const path = require('path');
             const promptPath = path.join(__dirname, `../../../../configs/businesses/${businessId}/prompt_rules.json`);
 
-            console.log(`🔍 [RealtimeWS] Looking for prompt file at: ${promptPath}`);
+            console.log(`🔍 [RealtimeWS] Checking file system at: ${promptPath}`);
 
             if (fs.existsSync(promptPath)) {
               const businessPrompts = JSON.parse(fs.readFileSync(promptPath, 'utf8'));
-              console.log(`🔍 [RealtimeWS] Loaded prompt file, checking realtimeSystem.full...`);
+              console.log(`🔍 [RealtimeWS] Loaded prompt from file system, checking realtimeSystem.full...`);
 
               if (businessPrompts.realtimeSystem?.full) {
-                console.log(`✅ [RealtimeWS] Using business-specific prompt for: ${businessId}`);
+                console.log(`✅ [RealtimeWS] Using business-specific prompt from file system for: ${businessId}`);
                 console.log(`📝 [RealtimeWS] Prompt preview: ${businessPrompts.realtimeSystem.full.substring(0, 100)}...`);
                 return businessPrompts.realtimeSystem.full;
               } else {
                 console.warn(`⚠️ [RealtimeWS] No realtimeSystem.full found in prompt file for: ${businessId}`);
               }
             } else {
-              console.warn(`⚠️ [RealtimeWS] Prompt file not found: ${promptPath}`);
+              console.warn(`⚠️ [RealtimeWS] Prompt file not found in file system: ${promptPath}`);
             }
           } else {
             console.warn(`⚠️ [RealtimeWS] No business config found for: ${businessId}`);
@@ -94,6 +101,7 @@ class RealtimeWebSocketService extends EventEmitter {
 
     // Fallback to default prompt
     console.log('📝 [RealtimeWS] Using default system prompt');
+    console.log(`📝 [RealtimeWS] System prompt loaded (first 150 chars): ${this.DEFAULT_SYSTEM_PROMPT.substring(0, 150)}`);
     return this.DEFAULT_SYSTEM_PROMPT;
   }
 
@@ -198,7 +206,7 @@ class RealtimeWebSocketService extends EventEmitter {
   async configureSession(sessionData) {
     const { openaiWs } = sessionData;
 
-    const systemPrompt = this.getSystemPrompt(sessionData.sessionId);
+    const systemPrompt = await this.getSystemPrompt(sessionData.sessionId);
     console.log('📝 [RealtimeWS] System prompt loaded (first 150 chars):', systemPrompt.substring(0, 150));
 
     const config = {

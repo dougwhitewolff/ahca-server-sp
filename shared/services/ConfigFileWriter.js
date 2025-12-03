@@ -318,7 +318,7 @@ class ConfigFileWriter {
   listBusinesses() {
     try {
       if (!fs.existsSync(this.configsDir)) {
-        return { businesses: [], total: 0 };
+        return { success: true, businesses: [], total: 0 };
       }
 
       const businesses = [];
@@ -346,12 +346,14 @@ class ConfigFileWriter {
       }
 
       return {
+        success: true,
         businesses,
         total: businesses.length,
       };
     } catch (error) {
       console.error(`❌ [ConfigFileWriter] Failed to list businesses:`, error);
       return {
+        success: false,
         businesses: [],
         total: 0,
         error: error.message,
