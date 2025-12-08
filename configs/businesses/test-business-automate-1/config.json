@@ -1,0 +1,65 @@
+{
+  "businessId": "test-business-automate-1",
+  "businessName": "Test Business Automate 1",
+  "phoneNumber": "+01755588770",
+  "description": "Test Business Automate 1 - Electrical services",
+  "features": {
+    "ragEnabled": false,
+    "appointmentBookingEnabled": false,
+    "emergencyCallHandling": false,
+    "basicInfoCollection": true
+  },
+  "database": {
+    "collectionName": "test_business_automate_1_knowledge_base",
+    "vectorIndexName": "test_business_automate_1_vector_index",
+    "note": "RAG is disabled but collection/index names reserved for future use"
+  },
+  "calendar": {
+    "provider": "disabled",
+    "note": "Calendar integration disabled - no appointment booking for now"
+  },
+  "email": {
+    "provider": "microsoft",
+    "apiKey": "${MICROSOFT_GRAPH_API_KEY}",
+    "fromEmail": "notifications@4trades.ai",
+    "fromName": "Test Business Automate 1",
+    "recipientEmail": "undefined"
+  },
+  "sms": {
+    "enabled": true,
+    "adminNumbers": [
+      ""
+    ]
+  },
+  "companyInfo": {
+    "name": "Test Business Automate 1",
+    "phone": "+01755588770",
+    "email": "azmainmorshed03@gmail.com",
+    "website": "4trades.ai",
+    "address": "A2, House 130, Road 3, Block A, Niketan, Dhaka, Dhaka, AL 12123",
+    "services": [
+      "Electrical"
+    ],
+    "hours": {
+      "monday_friday": "4 am - 5 pm",
+      "saturday": "5 am -8 pm",
+      "sunday": "closed"
+    },
+    "emergencyContact": {
+      "available": false,
+      "phone": "",
+      "instructions": "Press # for emergency or time-sensitive issues"
+    }
+  },
+  "promptConfig": {
+    "agentName": "Sergio",
+    "agentPersonality": "friendly",
+    "greeting": "Hi there, I'm Sergio, Test Business Automate 1's virtual assistant. Parts of this call may be recorded so we can better understand your needs and improve our service. To get started, what are you calling about today?"
+  },
+  "agent": {
+    "name": "Sergio",
+    "role": "Virtual Assistant",
+    "personality": "Friendly",
+    "primaryFunction": "Information collection and emergency routing"
+  }
+}

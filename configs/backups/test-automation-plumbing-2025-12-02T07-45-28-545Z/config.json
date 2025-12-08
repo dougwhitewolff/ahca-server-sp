@@ -1,0 +1,65 @@
+{
+  "businessId": "test-automation-plumbing",
+  "businessName": "Test Automation Plumbing",
+  "phoneNumber": "+15558889999",
+  "description": "Test Automation Plumbing - Plumbing services",
+  "features": {
+    "ragEnabled": false,
+    "appointmentBookingEnabled": false,
+    "emergencyCallHandling": false,
+    "basicInfoCollection": true
+  },
+  "database": {
+    "collectionName": "test_automation_plumbing_knowledge_base",
+    "vectorIndexName": "test_automation_plumbing_vector_index",
+    "note": "RAG is disabled but collection/index names reserved for future use"
+  },
+  "calendar": {
+    "provider": "disabled",
+    "note": "Calendar integration disabled - no appointment booking for now"
+  },
+  "email": {
+    "provider": "microsoft",
+    "apiKey": "${MICROSOFT_GRAPH_API_KEY}",
+    "fromEmail": "notifications@4trades.ai",
+    "fromName": "Test Automation Plumbing",
+    "recipientEmail": "test@testautomation.com"
+  },
+  "sms": {
+    "enabled": true,
+    "adminNumbers": [
+      ""
+    ]
+  },
+  "companyInfo": {
+    "name": "Test Automation Plumbing",
+    "phone": "+15558889999",
+    "email": "test@testautomation.com",
+    "website": "www.testautomation.com",
+    "address": "789 Test St, Test City, OR 97123",
+    "services": [
+      "Plumbing"
+    ],
+    "hours": {
+      "monday_friday": "9 AM - 5 PM",
+      "saturday": "Closed",
+      "sunday": "Closed"
+    },
+    "emergencyContact": {
+      "available": false,
+      "phone": "",
+      "instructions": "Press # for emergency or time-sensitive issues"
+    }
+  },
+  "promptConfig": {
+    "agentName": "TestBot",
+    "agentPersonality": "professional",
+    "greeting": "Hi, I'm TestBot from Test Automation Plumbing. How can I help you today?"
+  },
+  "agent": {
+    "name": "TestBot",
+    "role": "Virtual Assistant",
+    "personality": "Professional",
+    "primaryFunction": "Information collection and emergency routing"
+  }
+}

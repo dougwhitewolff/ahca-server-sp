@@ -1,0 +1,65 @@
+{
+  "businessId": "friendly-hvac-co",
+  "businessName": "Friendly HVAC Co",
+  "phoneNumber": "+15557776666",
+  "description": "Friendly HVAC Co - HVAC services",
+  "features": {
+    "ragEnabled": false,
+    "appointmentBookingEnabled": false,
+    "emergencyCallHandling": true,
+    "basicInfoCollection": true
+  },
+  "database": {
+    "collectionName": "friendly_hvac_co_knowledge_base",
+    "vectorIndexName": "friendly_hvac_co_vector_index",
+    "note": "RAG is disabled but collection/index names reserved for future use"
+  },
+  "calendar": {
+    "provider": "disabled",
+    "note": "Calendar integration disabled - no appointment booking for now"
+  },
+  "email": {
+    "provider": "microsoft",
+    "apiKey": "${MICROSOFT_GRAPH_API_KEY}",
+    "fromEmail": "notifications@4trades.ai",
+    "fromName": "Friendly HVAC Co",
+    "recipientEmail": "friendly@hvac.com"
+  },
+  "sms": {
+    "enabled": true,
+    "adminNumbers": [
+      "+15551112222"
+    ]
+  },
+  "companyInfo": {
+    "name": "Friendly HVAC Co",
+    "phone": "+15557776666",
+    "email": "friendly@hvac.com",
+    "website": "www.friendlyhvac.com",
+    "address": "456 Friendly Ave, Portland, OR 97202",
+    "services": [
+      "HVAC"
+    ],
+    "hours": {
+      "monday_friday": "8 AM - 6 PM",
+      "saturday": "9 AM - 3 PM",
+      "sunday": "Closed"
+    },
+    "emergencyContact": {
+      "available": true,
+      "phone": "+15551112222",
+      "instructions": "Press # for emergency or time-sensitive issues"
+    }
+  },
+  "promptConfig": {
+    "agentName": "Alex",
+    "agentPersonality": "friendly",
+    "greeting": "Hey there! I'm Alex from Friendly HVAC. How can I help you today?"
+  },
+  "agent": {
+    "name": "Alex",
+    "role": "Virtual Assistant",
+    "personality": "Friendly",
+    "primaryFunction": "Information collection and emergency routing"
+  }
+}
