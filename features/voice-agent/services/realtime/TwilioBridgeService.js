@@ -86,11 +86,16 @@ class TwilioBridgeService {
       outMuLawRemainder: Buffer.alloc(0),
       outputBuffer: [], // Buffer for outbound audio
       isFlushing: false, // Prevent multiple flush loops
-      // resamplerInbound, // Persistent resampler: 8kHz -> 16kHz
-      // resamplerOutbound, // Persistent resampler: 24kHz -> 8kHz
+      // Noise Gate State
+      isSpeaking: false,
+      silenceFrames: 0
     });
     return sessionId;
   }
+
+  // Noise gate constants
+  get NOISE_THRESHOLD() { return 100; } // Lowered from 500 to 100 to catch quiet speech
+  get HYSTERESIS_FRAMES() { return 20; } // Increased from 10 to 20 (400ms) to prevent cutting out during pauses
 
   async stop(callSid) {
     const entry = this.callSidToSession.get(callSid);
@@ -138,29 +143,54 @@ class TwilioBridgeService {
     if (!entry || !payloadBase64) return;
 
     try {
-      // 1) Direct passthrough for G.711 u-law (OpenAI supports it natively now)
-      // const muLawBuf = Buffer.from(payloadBase64, 'base64');
-      // const pcm8k = this.decodeMuLawToPCM16(muLawBuf);
-      // const pcm16k = this.resamplePcm(pcm8k, entry.resamplerInbound);
-      // const pcm16kBase64 = this.int16ToBase64(pcm16k);
+      // 1) Noise Gate: Analyze audio energy before forwarding
+      // We must decode to PCM16 to calculate RMS, but we forward the original u-law if it passes.
+      const muLawBuf = Buffer.from(payloadBase64, 'base64');
+      const pcm16 = this.decodeMuLawToPCM16(muLawBuf);
+      const rms = this.calculateRMS(pcm16);
 
-      // 5) Send to OpenAI Realtime as input_audio_buffer.append via service
-      const sessionData = this.realtimeWSService.sessions.get(entry.sessionId);
-      if (sessionData) {
-        this.realtimeWSService.handleClientMessage(sessionData, {
-          type: 'audio',
-          data: payloadBase64 // Send original u-law base64 directly
-        });
-        // Note: Renaming this would require finding all usages.
-        // For now, we'll assume it's just a tracking metric and the name isn't critical.
-        // If it affects logic elsewhere, it will need to be refactored.
-        // entry.bufferedSamples16k = (entry.bufferedSamples16k || 0) + pcm16k.length;
+      // 2) Apply Noise Gate Logic
+      if (rms > this.NOISE_THRESHOLD) {
+        // Signal is loud enough to be speech
+        entry.isSpeaking = true;
+        entry.silenceFrames = 0;
+      } else {
+        // Signal is quiet (noise)
+        entry.silenceFrames++;
+        if (entry.silenceFrames > this.HYSTERESIS_FRAMES) {
+          // It's been quiet for long enough, close the gate
+          entry.isSpeaking = false;
+        }
+      }
+
+      // 3) Forward only if gate is open
+      if (entry.isSpeaking) {
+        const sessionData = this.realtimeWSService.sessions.get(entry.sessionId);
+        if (sessionData) {
+          this.realtimeWSService.handleClientMessage(sessionData, {
+            type: 'audio',
+            data: payloadBase64 // Send original u-law base64 directly
+          });
+        }
       }
     } catch (e) {
       // Swallow to keep real-time path resilient
       // eslint-disable-next-line no-console
       console.warn('⚠️ [TwilioBridge] Inbound media handling error:', e.message);
     }
+  }
+
+  /**
+   * Calculate Root Mean Square (RMS) amplitude of PCM data
+   * @param {Int16Array} pcmData 
+   * @returns {number} RMS value
+   */
+  calculateRMS(pcmData) {
+    let sumSquares = 0;
+    for (let i = 0; i < pcmData.length; i++) {
+      sumSquares += pcmData[i] * pcmData[i];
+    }
+    return Math.sqrt(sumSquares / pcmData.length);
   }
 
   /**
