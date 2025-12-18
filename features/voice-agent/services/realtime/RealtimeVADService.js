@@ -30,7 +30,7 @@ class RealtimeVADService extends EventEmitter {
     this.VAD_CONFIG = {
       // Server VAD settings - automatically chunks audio based on silence
       server_vad: {
-        threshold: 0.9,                    // Voice activation threshold (0-1)
+        threshold: 0.6,                    // Voice activation threshold (0-1)
         prefix_padding_ms: 300,            // Audio before speech detection
         silence_duration_ms: 1500,         // Silence duration to end turn (1.5s for faster response)
         create_response: false,            // Don't auto-create responses (we handle this)

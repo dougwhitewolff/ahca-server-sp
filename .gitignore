@@ -7,4 +7,3 @@ npm-debug.log
 /build
 coverage/
 *.local
-*.wav
