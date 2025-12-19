@@ -35,6 +35,26 @@ class RealtimeWebSocketService extends EventEmitter {
     } catch (e) {
       this.DEFAULT_SYSTEM_PROMPT = 'You are SherpaPrompt\'s voice assistant.';
     }
+
+    // VAD Configuration - Normal and Assistant-Speaking modes
+    this.VAD_CONFIG = {
+      // Normal VAD settings (when assistant is not speaking)
+      normal: {
+        threshold: 0.6,
+        prefix_padding_ms: 300,
+        silence_duration_ms: 1000,
+        create_response: true,
+        interrupt_response: true
+      },
+      // Assistant-speaking VAD settings (more strict to prevent false barge-ins)
+      assistantSpeaking: {
+        threshold: 1,                    // Higher threshold (requires more confident speech)
+        prefix_padding_ms: 300,
+        silence_duration_ms: 2500,        // Longer silence required (2.5s vs 1s)
+        create_response: true,
+        interrupt_response: true
+      }
+    };
   }
 
   /**
@@ -193,6 +213,66 @@ class RealtimeWebSocketService extends EventEmitter {
   }
 
   /**
+   * Calculate estimated audio playback duration based on transcript
+   * Uses average TTS speaking rate: ~150 characters per second
+   * Adds a small buffer (500ms) to account for network latency and playback delays
+   * @param {string} transcript - The response transcript text
+   * @returns {number} Estimated duration in milliseconds
+   */
+  calculateAudioDuration(transcript) {
+    if (!transcript || transcript.length === 0) {
+      // Default to 2 seconds for empty/unknown transcripts
+      return 2000;
+    }
+
+    // Average TTS speaking rate: ~150 characters per second
+    // This accounts for pauses, punctuation, and natural speech patterns
+    const charactersPerSecond = 25;
+    const baseDurationMs = (transcript.length / charactersPerSecond) * 1000;
+    
+    // Add buffer for network latency, audio processing, and playback delays
+    const bufferMs = 500;
+    
+    // Minimum duration of 1 second (for very short responses)
+    const minDurationMs = 1000;
+    
+    const estimatedDuration = Math.max(minDurationMs, baseDurationMs + bufferMs);
+    
+    return Math.ceil(estimatedDuration);
+  }
+
+  /**
+   * Update VAD configuration dynamically
+   * @param {Object} sessionData - Session data object
+   * @param {string} mode - 'normal' or 'assistantSpeaking'
+   */
+  async updateVADConfig(sessionData, mode) {
+    const { openaiWs, sessionId } = sessionData;
+    
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) {
+      console.warn('⚠️ [RealtimeWS] Cannot update VAD config - WebSocket not open');
+      return;
+    }
+
+    const vadConfig = mode === 'assistantSpeaking' 
+      ? this.VAD_CONFIG.assistantSpeaking 
+      : this.VAD_CONFIG.normal;
+
+    const updateConfig = {
+      type: 'session.update',
+      session: {
+        turn_detection: {
+          type: 'server_vad',
+          ...vadConfig
+        }
+      }
+    };
+
+    console.log(`⚙️ [RealtimeWS] Updating VAD config to ${mode} mode (silence_duration_ms: ${vadConfig.silence_duration_ms}, threshold: ${vadConfig.threshold})`);
+    openaiWs.send(JSON.stringify(updateConfig));
+  }
+
+  /**
    * Configure Realtime API session with tools and settings
    */
   async configureSession(sessionData) {
@@ -214,11 +294,7 @@ class RealtimeWebSocketService extends EventEmitter {
         },
         turn_detection: {
           type: 'server_vad',
-          threshold: 0.6,
-          prefix_padding_ms: 300,
-          silence_duration_ms: 1000,
-          create_response: true,  // Enable automatic response creation (semantic VAD)
-          interrupt_response: true  // Allow interruptions
+          ...this.VAD_CONFIG.normal  // Use normal VAD config initially
         },
         tools: this.defineTools(sessionData.sessionId),
         tool_choice: 'auto',
@@ -586,17 +662,28 @@ Without calling this function, the information is NOT saved and will NOT appear 
         // Only send cancel if we have an active response (not just finished)
         if (sessionData.isResponding && sessionData.activeResponseId) {
           console.log('🛑 [RealtimeWS] User interrupted - canceling AI response:', sessionData.activeResponseId);
+          
+          // Clear any pending VAD reversion timeout
+          if (sessionData.vadRevertTimeout) {
+            clearTimeout(sessionData.vadRevertTimeout);
+            sessionData.vadRevertTimeout = null;
+          }
+          
           try {
             sessionData.openaiWs.send(JSON.stringify({
               type: 'response.cancel'
             }));
             sessionData.isResponding = false;
             sessionData.activeResponseId = null;
+            // User interrupted - revert VAD config to normal immediately
+            await this.updateVADConfig(sessionData, 'normal');
           } catch (error) {
             console.log('⚠️ [RealtimeWS] Cancel failed (response may have completed):', error.message);
             // Still reset state even if cancel failed
             sessionData.isResponding = false;
             sessionData.activeResponseId = null;
+            // Revert VAD config even if cancel failed
+            await this.updateVADConfig(sessionData, 'normal');
           }
         }
 
@@ -664,6 +751,8 @@ Without calling this function, the information is NOT saved and will NOT appear 
         // First audio of a new response unsuppresses playback
         if (!sessionData.isResponding) {
           sessionData.suppressAudio = false;
+          // Assistant is starting to speak - update VAD config to be more strict
+          await this.updateVADConfig(sessionData, 'assistantSpeaking');
         }
         sessionData.isResponding = true;  // Track that AI is responding
         sessionData.activeResponseId = event.response_id || 'active';  // Track active response
@@ -694,6 +783,9 @@ Without calling this function, the information is NOT saved and will NOT appear 
           role: 'assistant'
         });
 
+        // Store transcript for duration calculation
+        sessionData.currentResponseTranscript = event.transcript;
+
         // Add to conversation history
         this.stateManager.addMessage(sessionId, 'assistant', event.transcript);
         break;
@@ -710,6 +802,26 @@ Without calling this function, the information is NOT saved and will NOT appear 
         sessionData.isResponding = false;  // AI finished responding
         sessionData.activeResponseId = null;  // Clear active response ID
         sessionData.suppressAudio = false; // Clear suppression at end of response
+        
+        // Calculate estimated audio playback duration based on transcript length
+        const transcript = sessionData.currentResponseTranscript || '';
+        const estimatedDurationMs = this.calculateAudioDuration(transcript);
+        
+        console.log(`⏱️ [RealtimeWS] Estimated audio duration: ${estimatedDurationMs}ms for transcript (${transcript.length} chars)`);
+        
+        // Schedule VAD config reversion after audio finishes playing
+        // Clear any existing timeout first
+        if (sessionData.vadRevertTimeout) {
+          clearTimeout(sessionData.vadRevertTimeout);
+        }
+        
+        sessionData.vadRevertTimeout = setTimeout(async () => {
+          console.log('🔄 [RealtimeWS] Reverting VAD config to normal after audio playback');
+          await this.updateVADConfig(sessionData, 'normal');
+          sessionData.vadRevertTimeout = null;
+          sessionData.currentResponseTranscript = null;
+        }, estimatedDurationMs);
+        
         this.sendToClient(sessionData, {
           type: 'response_done'
         });
