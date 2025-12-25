@@ -48,11 +48,11 @@ class RealtimeWebSocketService extends EventEmitter {
       },
       // Assistant-speaking VAD settings (more strict to prevent false barge-ins)
       assistantSpeaking: {
-        threshold: 1,                    // Higher threshold (requires more confident speech)
+        threshold: 0.9,                    // Higher threshold (requires more confident speech)
         prefix_padding_ms: 300,
-        silence_duration_ms: 2500,        // Longer silence required (2.5s vs 1s)
+        silence_duration_ms: 2000,        // Longer silence required (2.5s vs 1s)
         create_response: true,
-        interrupt_response: true
+        interrupt_response: false
       }
     };
   }
@@ -268,7 +268,8 @@ class RealtimeWebSocketService extends EventEmitter {
       }
     };
 
-    console.log(`⚙️ [RealtimeWS] Updating VAD config to ${mode} mode (silence_duration_ms: ${vadConfig.silence_duration_ms}, threshold: ${vadConfig.threshold})`);
+    console.log(`⚙️ [RealtimeWS] Updating VAD config to ${mode} mode:`);
+    console.log(`   📊 VAD Settings:`, JSON.stringify(vadConfig, null, 2));
     openaiWs.send(JSON.stringify(updateConfig));
   }
 
@@ -303,6 +304,8 @@ class RealtimeWebSocketService extends EventEmitter {
     };
 
     console.log('⚙️ [RealtimeWS] Configuring session with', config.session.tools.length, 'tools');
+    console.log('⚙️ [RealtimeWS] Initial VAD Config (normal mode):', JSON.stringify(this.VAD_CONFIG.normal, null, 2));
+    console.log('⚙️ [RealtimeWS] AssistantSpeaking VAD Config available:', JSON.stringify(this.VAD_CONFIG.assistantSpeaking, null, 2));
     openaiWs.send(JSON.stringify(config));
   }
 
@@ -703,7 +706,9 @@ Without calling this function, the information is NOT saved and will NOT appear 
         break;
 
       case 'conversation.item.input_audio_transcription.completed':
-        console.log('📝 [RealtimeWS] Transcription:', event.transcript);
+        console.log('📝 [RealtimeWS] ===== USER TRANSCRIPT RECEIVED =====');
+        console.log('📝 [RealtimeWS] User said:', event.transcript);
+        console.log('📝 [RealtimeWS] Session:', sessionId);
         this.sendToClient(sessionData, {
           type: 'transcript',
           text: event.transcript,
@@ -776,7 +781,9 @@ Without calling this function, the information is NOT saved and will NOT appear 
         break;
 
       case 'response.audio_transcript.done':
-        console.log('📝 [RealtimeWS] AI response transcript:', event.transcript);
+        console.log('📝 [RealtimeWS] ===== ASSISTANT TRANSCRIPT COMPLETE =====');
+        console.log('📝 [RealtimeWS] Assistant said:', event.transcript);
+        console.log('📝 [RealtimeWS] Session:', sessionId);
         this.sendToClient(sessionData, {
           type: 'transcript',
           text: event.transcript,
