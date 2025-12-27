@@ -1470,6 +1470,31 @@ Without calling this function, the information is NOT saved and will NOT appear 
 
       if (reason) {
         console.log('👤 [UserInfo] Setting reason:', reason);
+        
+        // Validate reason for Superior Fencing (must be related to fencing services)
+        const businessId = this.tenantContextManager ? this.tenantContextManager.getBusinessId(sessionId) : null;
+        if (businessId === 'superior-fencing') {
+          // Check if reason is related to fencing services
+          const reasonLower = reason.toLowerCase();
+          const relatedKeywords = [
+            'fence', 'fencing', 'gate', 'installation', 'repair', 'maintenance',
+            'estimate', 'quote', 'wood', 'vinyl', 'chain', 'privacy', 'deck',
+            'post', 'panel', 'railing', 'perimeter', 'yard', 'property', 'boundary'
+          ];
+          
+          const hasRelatedKeyword = relatedKeywords.some(keyword => reasonLower.includes(keyword));
+          
+          if (!hasRelatedKeyword) {
+            console.log('❌ [UserInfo] Reason validation failed - unrelated to fencing services:', reason);
+            return {
+              success: false,
+              message: "I'm sorry, but Superior Fence & Construction specializes in fencing services, gate installation and repair, and related services. Could you please tell me what you're calling about regarding fencing, gates, or property boundaries?"
+            };
+          }
+          
+          console.log('✅ [UserInfo] Reason validation passed for Superior Fencing');
+        }
+        
         updates.reason = reason;
       }
 
