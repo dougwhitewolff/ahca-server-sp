@@ -714,7 +714,10 @@ Without calling this function, the information is NOT saved and will NOT appear 
         this.stateManager.addMessage(sessionId, 'user', event.transcript);
 
         // FALLBACK: Check if transcription contains name information and OpenAI didn't call update_user_info
-        await this.checkForMissedNameInfo(sessionData, event.transcript);
+        // DISABLED: This fallback causes conversation state corruption by injecting fake function call outputs
+        // that OpenAI never requested, leading to hallucinations and re-asking for already collected info.
+        // OpenAI's natural function calling is reliable enough on its own.
+        // await this.checkForMissedNameInfo(sessionData, event.transcript);
         break;
 
       case 'conversation.item.input_audio_transcription.failed':
