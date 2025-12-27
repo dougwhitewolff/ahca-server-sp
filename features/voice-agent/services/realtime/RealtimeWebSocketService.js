@@ -48,9 +48,9 @@ class RealtimeWebSocketService extends EventEmitter {
       },
       // Assistant-speaking VAD settings (more strict to prevent false barge-ins)
       assistantSpeaking: {
-        threshold: 1,                    // Higher threshold (requires more confident speech)
+        threshold: 0.9,                    // Higher threshold (requires more confident speech)
         prefix_padding_ms: 300,
-        silence_duration_ms: 2500,        // Longer silence required (2.5s vs 1s)
+        silence_duration_ms: 2000,        // Longer silence required (2.5s vs 1s)
         create_response: true,
         interrupt_response: true
       }
