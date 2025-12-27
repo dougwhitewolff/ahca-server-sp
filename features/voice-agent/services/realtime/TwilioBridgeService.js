@@ -14,6 +14,16 @@ class TwilioBridgeService {
   constructor(realtimeWSService) {
     this.realtimeWSService = realtimeWSService;
     this.callSidToSession = new Map();
+    
+    // Noise gate configuration
+    this.noiseGateEnabled = process.env.NOISE_GATE_ENABLED !== 'false'; // Enabled by default
+    this.noiseGateThresholdDb = parseFloat(process.env.NOISE_GATE_THRESHOLD_DB || '-45'); // dB
+    this.noiseGateRatio = parseFloat(process.env.NOISE_GATE_RATIO || '0.1'); // 10% when below threshold
+    
+    if (this.noiseGateEnabled) {
+      console.log(`🎙️ [TwilioBridge] Noise gate enabled: threshold=${this.noiseGateThresholdDb}dB, ratio=${this.noiseGateRatio}`);
+    }
+    
     if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
       this.twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
     } else {
@@ -138,28 +148,69 @@ class TwilioBridgeService {
     if (!entry || !payloadBase64) return;
 
     try {
-      // 1) Direct passthrough for G.711 u-law (OpenAI supports it natively now)
-      // const muLawBuf = Buffer.from(payloadBase64, 'base64');
-      // const pcm8k = this.decodeMuLawToPCM16(muLawBuf);
-      // const pcm16k = this.resamplePcm(pcm8k, entry.resamplerInbound);
-      // const pcm16kBase64 = this.int16ToBase64(pcm16k);
-
-      // 5) Send to OpenAI Realtime as input_audio_buffer.append via service
       const sessionData = this.realtimeWSService.sessions.get(entry.sessionId);
-      if (sessionData) {
+      if (!sessionData) return;
+
+      // Apply noise gate if enabled
+      if (this.noiseGateEnabled) {
+        // Decode μ-law to PCM for analysis
+        const muLawBuf = Buffer.from(payloadBase64, 'base64');
+        const pcm = this.decodeMuLawToPCM16(muLawBuf);
+        
+        // Apply noise gate
+        const gatedPcm = this.applyNoiseGate(pcm);
+        
+        // Re-encode to μ-law
+        const gatedMuLaw = this.encodePCM16ToMuLaw(gatedPcm);
+        const gatedBase64 = gatedMuLaw.toString('base64');
+        
+        // Send gated audio to OpenAI
         this.realtimeWSService.handleClientMessage(sessionData, {
           type: 'audio',
-          data: payloadBase64 // Send original u-law base64 directly
+          data: gatedBase64
         });
-        // Note: Renaming this would require finding all usages.
-        // For now, we'll assume it's just a tracking metric and the name isn't critical.
-        // If it affects logic elsewhere, it will need to be refactored.
-        // entry.bufferedSamples16k = (entry.bufferedSamples16k || 0) + pcm16k.length;
+      } else {
+        // Direct passthrough if noise gate is disabled
+        this.realtimeWSService.handleClientMessage(sessionData, {
+          type: 'audio',
+          data: payloadBase64
+        });
       }
     } catch (e) {
       // Swallow to keep real-time path resilient
       // eslint-disable-next-line no-console
       console.warn('⚠️ [TwilioBridge] Inbound media handling error:', e.message);
+    }
+  }
+
+  /**
+   * Apply noise gate to PCM audio
+   * @param {Int16Array} pcm - Input PCM data
+   * @returns {Int16Array} Gated PCM data
+   */
+  applyNoiseGate(pcm) {
+    // Calculate RMS (Root Mean Square) for volume measurement
+    let sumSquares = 0;
+    for (let i = 0; i < pcm.length; i++) {
+      const normalized = pcm[i] / 32768.0; // Normalize to -1.0 to 1.0
+      sumSquares += normalized * normalized;
+    }
+    const rms = Math.sqrt(sumSquares / pcm.length);
+    
+    // Convert RMS to dB (decibels)
+    const rmsDb = 20 * Math.log10(rms + 1e-10); // Add small value to avoid log(0)
+    
+    // Apply gate
+    if (rmsDb < this.noiseGateThresholdDb) {
+      // Below threshold - attenuate by ratio
+      const gated = new Int16Array(pcm.length);
+      for (let i = 0; i < pcm.length; i++) {
+        gated[i] = Math.round(pcm[i] * this.noiseGateRatio);
+      }
+      return gated;
+    } else {
+      // Above threshold - pass through unchanged
+      return pcm;
     }
   }
 
