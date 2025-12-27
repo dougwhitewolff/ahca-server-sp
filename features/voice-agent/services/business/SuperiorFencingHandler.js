@@ -89,7 +89,17 @@ class SuperiorFencingHandler {
         // Store the raw reason first
         session.collectedInfo.rawReason = text.trim();
         
-        // Process the reason with AI to create a clean summary
+        // Validate the reason first
+        const validationResult = await this.validateReason(text.trim());
+        
+        if (!validationResult.valid) {
+          // Reason is not related to fencing services - ask for clarification
+          response = validationResult.message || "I'm sorry, but Superior Fence & Construction specializes in fencing services, gate installation and repair, and related services. Could you please tell me what you're calling about regarding fencing, gates, or property boundaries?";
+          // Stay in COLLECTING_REASON state to get a valid reason
+          break;
+        }
+        
+        // Reason is valid - process it with AI to create a clean summary
         try {
           session.collectedInfo.reason = await this.processReasonWithAI(text.trim());
         } catch (error) {
@@ -326,6 +336,114 @@ class SuperiorFencingHandler {
   }
 
   /**
+   * Validate if reason is related to Superior Fence & Construction's services
+   * @param {string} rawReason - Raw user input for reason
+   * @returns {Promise<{valid: boolean, message?: string}>} Validation result
+   */
+  async validateReason(rawReason) {
+    if (!this.openAIService) {
+      // If no OpenAI service, do basic keyword check
+      const reasonLower = rawReason.toLowerCase();
+      const relatedKeywords = [
+        'fence', 'fencing', 'gate', 'installation', 'repair', 'maintenance',
+        'estimate', 'quote', 'wood', 'vinyl', 'chain', 'privacy', 'deck',
+        'post', 'panel', 'railing', 'perimeter', 'yard', 'property', 'boundary'
+      ];
+      
+      const hasRelatedKeyword = relatedKeywords.some(keyword => reasonLower.includes(keyword));
+      if (!hasRelatedKeyword) {
+        return {
+          valid: false,
+          message: "I'm sorry, but Superior Fence & Construction specializes in fencing services, gate installation and repair, and related services. Could you please tell me what you're calling about regarding fencing, gates, or property boundaries?"
+        };
+      }
+      return { valid: true };
+    }
+
+    try {
+      console.log('🔍 [SuperiorFencing] Validating reason:', rawReason);
+      
+      const validationMessages = [
+        {
+          role: 'system',
+          content: `You are validating customer inquiries for Superior Fence & Construction, a fencing company that provides:
+- New fence installation
+- Fence repair and maintenance
+- Gate installation and repair
+- Commercial fencing
+- Residential fencing
+- Estimates and quotes for fencing projects
+
+Your task is to determine if the customer's reason for calling is RELATED to fencing, gates, or property boundary services.
+
+VALID reasons include:
+- Fence installation, repair, replacement, or maintenance
+- Gate installation, repair, or maintenance
+- Fence estimates or quotes
+- Property boundary fencing
+- Commercial or residential fencing projects
+- Fence material questions (wood, vinyl, chain link, etc.)
+- Fence-related damage or issues
+
+INVALID reasons (unrelated to fencing services):
+- Plumbing, electrical, HVAC, roofing, or other construction services
+- Landscaping (unless specifically about fence installation)
+- General home improvement not related to fences
+- Appliance repair
+- Car repair or automotive services
+- Medical or health services
+- Legal services
+- Financial services
+- Completely unrelated topics
+
+Return ONLY a JSON object: {"valid": true} if related to fencing, or {"valid": false, "message": "I'm sorry, but Superior Fence & Construction specializes in fencing services, gate installation and repair, and related services. Could you please tell me what you're calling about regarding fencing, gates, or property boundaries?"} if unrelated.`
+        },
+        {
+          role: 'user',
+          content: `Customer's reason: "${rawReason}"`
+        }
+      ];
+
+      const validationResult = await this.openAIService.callOpenAI(validationMessages, 'gpt-5-nano', 2, {
+        max_output_tokens: 100,
+        reasoning: { effort: 'minimal' },
+        temperature: 0.1
+      });
+
+      // Parse JSON response
+      let result;
+      try {
+        result = JSON.parse(validationResult.trim());
+      } catch (e) {
+        // If not JSON, check if it contains "valid"
+        if (validationResult.toLowerCase().includes('valid') && validationResult.toLowerCase().includes('false')) {
+          result = {
+            valid: false,
+            message: "I'm sorry, but Superior Fence & Construction specializes in fencing services, gate installation and repair, and related services. Could you please tell me what you're calling about regarding fencing, gates, or property boundaries?"
+          };
+        } else {
+          // Default to valid if we can't parse
+          console.warn('⚠️ [SuperiorFencing] Could not parse validation result, defaulting to valid');
+          result = { valid: true };
+        }
+      }
+
+      if (result.valid === false) {
+        console.log('❌ [SuperiorFencing] Reason validation failed - unrelated to fencing services');
+        return result;
+      }
+
+      console.log('✅ [SuperiorFencing] Reason validation passed');
+      return { valid: true };
+
+    } catch (error) {
+      console.error('❌ [SuperiorFencing] Reason validation error:', error);
+      // On error, default to valid to avoid blocking legitimate calls
+      return { valid: true };
+    }
+  }
+
+  /**
    * Process reason with AI to create a clean, professional summary
    * @param {string} rawReason - Raw user input for reason
    * @returns {Promise<string>} Processed reason summary
@@ -350,6 +468,8 @@ class SuperiorFencingHandler {
         {
           role: 'system',
           content: `You are helping Superior Fence & Construction understand customer inquiries. The customer called Superior Fence & Construction (a fencing company that provides fence installation, repair, maintenance, gates, and estimates) and gave this reason for their call.
+
+CRITICAL: Only process reasons that are RELATED to fencing, gates, or property boundary services. If the reason is completely unrelated (e.g., plumbing, electrical, medical, etc.), return an error message.
 
 Please summarize their reason into a clear, professional, concise summary (maximum 10 words) that captures the main service they need.
 
