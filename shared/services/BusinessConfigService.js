@@ -2,7 +2,8 @@
  * BusinessConfigService - Manages multi-tenant business configurations
  * 
  * This service handles:
- * - Loading business configurations from files
+ * - Loading business configurations from MongoDB (primary)
+ * - Fallback to file system for legacy configs
  * - Mapping phone numbers to business IDs
  * - Caching configurations for performance
  * - Validating business configurations
@@ -10,32 +11,85 @@
 
 const fs = require('fs').promises;
 const path = require('path');
+const BusinessConfig = require('../models/BusinessConfig.model');
+const mongoDBConnection = require('./MongoDBConnection');
 
 class BusinessConfigService {
   constructor() {
     this.businessConfigs = new Map(); // Cache for business configs
     this.phoneToBusinessMap = new Map(); // Phone number -> businessId mapping
     this.initialized = false;
+    this.mongoDBEnabled = false;
   }
 
   /**
-   * Initialize the service by loading phone mapping only (lazy load configs)
+   * Initialize the service by connecting to MongoDB and loading phone mapping
    */
   async initialize() {
     try {
       console.log('🏢 [BusinessConfigService] Initializing multi-tenant business configurations...');
       
-      // Load phone number to business ID mapping
-      await this.loadPhoneMapping();
+      // Try to connect to MongoDB
+      try {
+        await mongoDBConnection.connect();
+        this.mongoDBEnabled = true;
+        console.log('✅ [BusinessConfigService] MongoDB connection established');
+        
+        // Load phone mappings from MongoDB
+        await this.loadPhoneMappingFromMongoDB();
+      } catch (error) {
+        console.warn('⚠️ [BusinessConfigService] MongoDB connection failed, falling back to file system:', error.message);
+        this.mongoDBEnabled = false;
+        
+        // Fallback to file-based phone mapping
+        await this.loadPhoneMapping();
+      }
       
       // Skip loading all configs - use lazy loading instead
       console.log('📋 [BusinessConfigService] Using lazy loading for business configs');
       
       this.initialized = true;
-      console.log(`✅ [BusinessConfigService] Initialized with lazy loading enabled`);
+      console.log(`✅ [BusinessConfigService] Initialized with lazy loading enabled (MongoDB: ${this.mongoDBEnabled ? 'ON' : 'OFF'})`);
       
     } catch (error) {
       console.error('❌ [BusinessConfigService] Failed to initialize:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Load phone number to business ID mapping from MongoDB
+   */
+  async loadPhoneMappingFromMongoDB() {
+    try {
+      console.log('🔍 [BusinessConfigService] Loading phone mappings from MongoDB...');
+      console.log('📊 [BusinessConfigService] MongoDB Query: { status: "active" }, fields: [businessId, phoneNumber]');
+      
+      const startTime = Date.now();
+      
+      // Get all active business configs from MongoDB
+      const businesses = await BusinessConfig.find({ status: 'active' }).select('businessId phoneNumber');
+      
+      const duration = Date.now() - startTime;
+      console.log(`📦 [BusinessConfigService] Found ${businesses.length} active businesses in MongoDB (${duration}ms)`);
+      
+      // Clear existing mapping
+      this.phoneToBusinessMap.clear();
+      
+      // Load phone mappings
+      for (const business of businesses) {
+        this.phoneToBusinessMap.set(business.phoneNumber, business.businessId);
+        console.log(`  📞 ${business.phoneNumber} → ${business.businessId}`);
+      }
+      
+      console.log(`✅ [BusinessConfigService] Phone mapping complete: ${this.phoneToBusinessMap.size} mappings cached in memory`);
+      
+    } catch (error) {
+      console.error('❌ [BusinessConfigService] Error loading phone mapping from MongoDB:', {
+        message: error.message,
+        code: error.code,
+        name: error.name,
+      });
       throw error;
     }
   }
@@ -310,9 +364,9 @@ class BusinessConfigService {
   /**
    * Get business configuration by business ID (with lazy loading)
    * @param {string} businessId - Business identifier
-   * @returns {Object|null} Business configuration or null if not found
+   * @returns {Promise<Object|null>} Business configuration or null if not found
    */
-  getBusinessConfig(businessId) {
+  async getBusinessConfig(businessId) {
     if (!this.initialized) {
       throw new Error('BusinessConfigService not initialized');
     }
@@ -320,18 +374,51 @@ class BusinessConfigService {
     // Check if already cached
     let config = this.businessConfigs.get(businessId);
     
-    if (!config) {
-      // Lazy load the config synchronously (will be async in practice)
+    if (config) {
+      console.log(`⚡ [BusinessConfigService] Config retrieved from CACHE for: ${businessId}`);
+      return config;
+    }
+    
+    console.log(`🔍 [BusinessConfigService] Config NOT in cache, loading for: ${businessId}`);
+    
+    // Try to load from MongoDB first
+    if (this.mongoDBEnabled) {
       try {
-        console.log(`🔄 [BusinessConfigService] Lazy loading config for: ${businessId}`);
-        // Note: This should be async but keeping minimal changes
-        // In practice, this will be called from async contexts
-        this.loadBusinessConfigSync(businessId);
-        config = this.businessConfigs.get(businessId);
+        console.log(`🗄️  [BusinessConfigService] Querying MongoDB for: ${businessId}`);
+        const startTime = Date.now();
+        
+        config = await this.loadBusinessConfigFromMongoDB(businessId);
+        
+        const duration = Date.now() - startTime;
+        
+        if (config) {
+          // Cache it
+          this.businessConfigs.set(businessId, config);
+          console.log(`✅ [BusinessConfigService] MongoDB fetch successful in ${duration}ms, cached for future use`);
+          return config;
+        } else {
+          console.log(`ℹ️  [BusinessConfigService] No MongoDB record found for ${businessId} (${duration}ms)`);
+        }
       } catch (error) {
-        console.error(`❌ [BusinessConfigService] Failed to lazy load ${businessId}:`, error);
-        return null;
+        console.warn(`⚠️ [BusinessConfigService] MongoDB fetch failed for ${businessId}, trying file system:`, error.message);
       }
+    } else {
+      console.log(`ℹ️  [BusinessConfigService] MongoDB disabled, using file system`);
+    }
+    
+    // Fallback to file system
+    try {
+      console.log(`📁 [BusinessConfigService] Loading config from file system for: ${businessId}`);
+      const startTime = Date.now();
+      
+      await this.loadBusinessConfig(businessId);
+      config = this.businessConfigs.get(businessId);
+      
+      const duration = Date.now() - startTime;
+      console.log(`✅ [BusinessConfigService] File system load successful in ${duration}ms`);
+    } catch (error) {
+      console.error(`❌ [BusinessConfigService] Failed to load config for ${businessId}:`, error);
+      return null;
     }
     
     if (!config) {
@@ -339,6 +426,71 @@ class BusinessConfigService {
     }
     
     return config || null;
+  }
+
+  /**
+   * Load business configuration from MongoDB
+   * @param {string} businessId - The business identifier
+   * @returns {Promise<Object|null>} Business configuration or null if not found
+   */
+  async loadBusinessConfigFromMongoDB(businessId) {
+    try {
+      console.log(`📊 [BusinessConfigService] MongoDB Query: { businessId: "${businessId}", status: "active" }`);
+      
+      const businessConfig = await BusinessConfig.findOne({ 
+        businessId, 
+        status: 'active' 
+      }).lean();
+      
+      if (!businessConfig) {
+        console.log(`❌ [BusinessConfigService] No MongoDB document found for: ${businessId}`);
+        return null;
+      }
+      
+      console.log(`📦 [BusinessConfigService] MongoDB document found:`, {
+        businessId: businessConfig.businessId,
+        businessName: businessConfig.businessName,
+        phoneNumber: businessConfig.phoneNumber,
+        hasPromptRules: !!businessConfig.promptRules,
+        promptRulesKeys: businessConfig.promptRules ? Object.keys(businessConfig.promptRules) : [],
+        status: businessConfig.status,
+        createdAt: businessConfig.createdAt,
+      });
+      
+      // Transform MongoDB document to the expected format
+      const config = {
+        businessId: businessConfig.businessId,
+        businessName: businessConfig.businessName,
+        phoneNumber: businessConfig.phoneNumber,
+        description: businessConfig.description,
+        features: businessConfig.features,
+        database: businessConfig.database,
+        calendar: businessConfig.calendar,
+        email: businessConfig.email,
+        companyInfo: businessConfig.companyInfo,
+        promptConfig: businessConfig.promptConfig,
+        knowledgeBasePath: businessConfig.knowledgeBasePath,
+        // Store prompt rules separately for easy access
+        _promptRules: businessConfig.promptRules,
+      };
+      
+      console.log(`🔧 [BusinessConfigService] Config transformed, resolving environment variables...`);
+      
+      // Resolve environment variables
+      const resolvedConfig = this.resolveEnvironmentVariables(config);
+      
+      console.log(`✅ [BusinessConfigService] Config fully loaded and resolved from MongoDB for: ${businessId}`);
+      
+      return resolvedConfig;
+      
+    } catch (error) {
+      console.error(`❌ [BusinessConfigService] MongoDB error for ${businessId}:`, {
+        message: error.message,
+        code: error.code,
+        name: error.name,
+      });
+      throw error;
+    }
   }
 
   /**
@@ -364,7 +516,25 @@ class BusinessConfigService {
    */
   async reloadBusinessConfig(businessId) {
     console.log(`🔄 [BusinessConfigService] Reloading config for ${businessId}`);
-    await this.loadBusinessConfig(businessId);
+    
+    // Clear from cache
+    this.businessConfigs.delete(businessId);
+    
+    // Reload from MongoDB or file system
+    await this.getBusinessConfig(businessId);
+  }
+
+  /**
+   * Reload phone mappings from MongoDB
+   */
+  async reloadPhoneMappings() {
+    if (this.mongoDBEnabled) {
+      console.log('🔄 [BusinessConfigService] Reloading phone mappings from MongoDB');
+      await this.loadPhoneMappingFromMongoDB();
+    } else {
+      console.log('🔄 [BusinessConfigService] Reloading phone mappings from file system');
+      await this.loadPhoneMapping();
+    }
   }
 
   /**
@@ -412,6 +582,43 @@ class BusinessConfigService {
    */
   isInitialized() {
     return this.initialized;
+  }
+
+  /**
+   * Get prompt rules for a business
+   * @param {string} businessId - Business identifier
+   * @returns {Promise<Object|null>} Prompt rules or null if not found
+   */
+  async getPromptRules(businessId) {
+    // First ensure config is loaded
+    const config = await this.getBusinessConfig(businessId);
+    
+    if (!config) {
+      return null;
+    }
+    
+    // If loaded from MongoDB, return the cached prompt rules
+    if (config._promptRules) {
+      return config._promptRules;
+    }
+    
+    // Otherwise, load from file system
+    try {
+      const promptRulesPath = path.join(__dirname, `../../configs/businesses/${businessId}/prompt_rules.json`);
+      const promptRulesData = await fs.readFile(promptRulesPath, 'utf8');
+      return JSON.parse(promptRulesData);
+    } catch (error) {
+      console.error(`❌ [BusinessConfigService] Error loading prompt rules for ${businessId}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Check if MongoDB is enabled
+   * @returns {boolean} True if MongoDB is connected and enabled
+   */
+  isMongoDBEnabled() {
+    return this.mongoDBEnabled;
   }
 }
 
