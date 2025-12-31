@@ -89,17 +89,8 @@ class SuperiorFencingHandler {
         // Store the raw reason first
         session.collectedInfo.rawReason = text.trim();
         
-        // Validate the reason first
-        const validationResult = await this.validateReason(text.trim());
-        
-        if (!validationResult.valid) {
-          // Reason is not related to fencing services - ask for clarification
-          response = validationResult.message || "I'm sorry, but Superior Fence & Construction specializes in fencing services, gate installation and repair, and related services. Could you please tell me what you're calling about regarding fencing, gates, or property boundaries?";
-          // Stay in COLLECTING_REASON state to get a valid reason
-          break;
-        }
-        
-        // Reason is valid - process it with AI to create a clean summary
+        // Accept any reason - no validation required
+        // Process it with AI to create a clean summary
         try {
           session.collectedInfo.reason = await this.processReasonWithAI(text.trim());
         } catch (error) {
