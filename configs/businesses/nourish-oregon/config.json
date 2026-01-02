@@ -1,0 +1,156 @@
+{
+  "businessId": "nourish-oregon",
+  "businessName": "Nourish Oregon",
+  "phoneNumber": "+1XXXXXXXXXX",
+  "description": "Nourish Oregon - Food assistance services for Oregon and Southeast Washington",
+  
+  "features": {
+    "ragEnabled": true,
+    "appointmentBookingEnabled": false,
+    "emergencyCallHandling": false,
+    "basicInfoCollection": true,
+    "callForwarding": true,
+    "voicemailHandling": true,
+    "afterHoursGreeting": true
+  },
+  
+  "database": {
+    "collectionName": "nourish_oregon_knowledge_base",
+    "vectorIndexName": "nourish_oregon_vector_index"
+  },
+  
+  "calendar": {
+    "provider": "disabled",
+    "note": "No appointment booking needed"
+  },
+  
+  "email": {
+    "provider": "microsoft-graph",
+    "tenantId": "${BUSINESS_SHERPAPROMPT_TENANT_ID}",
+    "clientId": "${BUSINESS_SHERPAPROMPT_CLIENT_ID}",
+    "clientSecret": "${BUSINESS_SHERPAPROMPT_CLIENT_SECRET}",
+    "senderEmail": "${BUSINESS_SHERPAPROMPT_SENDER_EMAIL}",
+    "fromEmail": "noreply@4trades.ai",
+    "fromName": "Nourish Oregon",
+    "notificationRecipients": ["april@nourishoregon.com"]
+  },
+  
+  "sms": {
+    "enabled": true,
+    "adminNumbers": ["${NOURISH_OREGON_APRIL_PHONE}"]
+  },
+  
+  "companyInfo": {
+    "name": "Nourish Oregon",
+    "phone": "+1XXXXXXXXXX",
+    "email": "april@nourishoregon.com",
+    "website": "nourishoregon.com",
+    "address": "Oregon",
+    "services": [
+      "Drive-up food pickup",
+      "Walk-up food pickup",
+      "Food delivery service",
+      "Online drive-up orders",
+      "Rental and utility assistance (HRSN program)",
+      "Doernbecher Children's Hospital partnership"
+    ],
+    "hours": {
+      "driveup_monday": "4:00 PM - 7:00 PM",
+      "driveup_tuesday": "4:00 PM - 7:00 PM",
+      "driveup_thursday": "10:00 AM - 1:00 PM",
+      "walkup_tuesday": "4:00 PM - 7:00 PM",
+      "walkup_thursday": "10:00 AM - 1:00 PM",
+      "note": "Online orders available at nourishoregon.com"
+    },
+    "eligibility": {
+      "serviceArea": "Oregon and Southeast Washington",
+      "incomeRequirements": "None - no income requirements",
+      "idRequirements": "None - no ID required",
+      "note": "We're here to help everyone in need"
+    },
+    "rules": {
+      "cannotChangePickupToDelivery": true,
+      "bringOwnBags": "Encouraged but not required",
+      "noRentalAssistanceAdvertising": true
+    }
+  },
+  
+  "callRouting": {
+    "enabled": true,
+    "staff": {
+      "april": {
+        "name": "April",
+        "role": "Office Manager",
+        "phone": "${NOURISH_OREGON_APRIL_PHONE}",
+        "handles": ["donations", "volunteering", "partners", "unknown", "default"]
+      },
+      "trina": {
+        "name": "Trina",
+        "role": "Delivery Team",
+        "phone": "${NOURISH_OREGON_TRINA_PHONE}",
+        "handles": ["deliveries"]
+      },
+      "dylan": {
+        "name": "Dylan",
+        "role": "Drive-up Team",
+        "phone": "${NOURISH_OREGON_DYLAN_PHONE}",
+        "handles": ["driveup", "pickup"]
+      },
+      "jordan": {
+        "name": "Jordan",
+        "role": "HRSN Program / Doernbecher",
+        "phone": "${NOURISH_OREGON_JORDAN_PHONE}",
+        "handles": ["rental_assistance", "utility_assistance", "doernbecher"]
+      },
+      "betty": {
+        "name": "Betty Brown",
+        "role": "Executive Director",
+        "phone": "${NOURISH_OREGON_BETTY_PHONE}",
+        "handles": ["betty_specific"],
+        "note": "Screen through April first"
+      }
+    },
+    "callTimeout": 30,
+    "voicemailMessage": "It looks like {staffName} isn't available right now. Can I get your name and number so they can call you back?"
+  },
+  
+  "promptConfig": {
+    "agentName": "Jacob",
+    "agentVoice": "male",
+    "agentPersonality": "warm and personal",
+    "agentType": "virtual assistant",
+    "greeting": "Thanks for calling Nourish Oregon. This is Jacob, Nourish Oregon's virtual assistant. This call may be recorded for improving our services. I'll make sure you reach the right person to help you. Feel free to ask me any questions—if I can't help, I'll connect you with someone who can. What can I help you with today?",
+    "afterHoursGreeting": "Thanks for calling Nourish Oregon. We're currently closed. Our drive-up hours are Monday and Tuesday from 4 to 7 PM, and Thursday from 10 AM to 1 PM. Walk-up hours are Tuesday from 4 to 7 PM and Thursday from 10 AM to 1 PM. You can also place online orders at nourishoregon.com. Please call back during our hours, or leave your name and number and we'll get back to you."
+  },
+  
+  "agent": {
+    "name": "Jacob",
+    "role": "Virtual Assistant",
+    "personality": "Warm, personal, and helpful",
+    "primaryFunction": "Answer questions, route calls, and connect callers with the right staff member"
+  },
+  
+  "language": {
+    "primary": "English",
+    "secondary": ["Spanish"],
+    "autoDetect": true,
+    "note": "Agent can answer questions in Spanish but cannot transfer to Spanish-speaking staff"
+  },
+  
+  "keyPhrases": [
+    "We're glad you called",
+    "We're here to help",
+    "No income requirements",
+    "No ID required"
+  ],
+  
+  "twilio": {
+    "note": "Twilio phone number to be assigned for Nourish Oregon",
+    "callForwarding": {
+      "enabled": true,
+      "timeout": 30,
+      "action": "Return to agent for voicemail if staff unavailable"
+    }
+  }
+}
+
