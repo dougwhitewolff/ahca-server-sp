@@ -80,6 +80,174 @@ router.post('/voice/transfer-emergency', async (req, res) => {
 });
 
 /**
+ * POST /twilio/voice/transfer-staff
+ * Staff call transfer endpoint - routes calls to specific staff members
+ * Used by Nourish Oregon for intent-based routing
+ */
+router.post('/voice/transfer-staff', async (req, res) => {
+  try {
+    const businessId = req.body.businessId || req.query.businessId;
+    const staffPhone = req.body.staffPhone || req.query.staffPhone;
+    const staffName = req.body.staffName || req.query.staffName || 'our team';
+    const callSid = req.body.CallSid || req.body.callSid;
+    
+    console.log(`📞 [TwilioVoice] Staff transfer request for business: ${businessId}, staff: ${staffName}, call: ${callSid}`);
+
+    if (!businessId) {
+      console.error('❌ [TwilioVoice] No businessId provided for staff transfer');
+      const twiml = new twilio.twiml.VoiceResponse();
+      twiml.say('Sorry, unable to process transfer. Please hang up and try again.');
+      twiml.hangup();
+      res.type('text/xml');
+      return res.send(twiml.toString());
+    }
+
+    if (!staffPhone) {
+      console.error('❌ [TwilioVoice] No staff phone provided for transfer');
+      const twiml = new twilio.twiml.VoiceResponse();
+      twiml.say('Sorry, unable to complete the transfer. Please hang up and call back.');
+      twiml.hangup();
+      res.type('text/xml');
+      return res.send(twiml.toString());
+    }
+
+    // Initialize business config service if needed
+    if (!businessConfigService.isInitialized()) {
+      await businessConfigService.initialize();
+    }
+
+    // Get business configuration
+    const businessConfig = businessConfigService.getBusinessConfig(businessId);
+    if (!businessConfig) {
+      console.error(`❌ [TwilioVoice] Business config not found for staff transfer: ${businessId}`);
+      const twiml = new twilio.twiml.VoiceResponse();
+      twiml.say('Sorry, unable to process transfer. Please hang up and try again.');
+      twiml.hangup();
+      res.type('text/xml');
+      return res.send(twiml.toString());
+    }
+
+    console.log(`✅ [TwilioVoice] Transferring call to ${staffName}: ${staffPhone}`);
+
+    // Create TwiML to transfer the call
+    const twiml = new twilio.twiml.VoiceResponse();
+    twiml.say(`Connecting you with ${staffName} now. Please hold.`);
+    
+    // Set timeout to 30 seconds, then return to agent if no answer
+    const dial = twiml.dial({
+      callerId: businessConfig.phoneNumber || businessConfig.companyInfo?.phone,
+      timeout: 30,
+      action: `/twilio/voice/transfer-callback?businessId=${businessId}&staffName=${encodeURIComponent(staffName)}`,
+      method: 'POST'
+    });
+    dial.number(staffPhone);
+    
+    // If dial fails immediately, provide fallback
+    twiml.say('Sorry, we were unable to connect you. Let me take a message.');
+    
+    res.type('text/xml');
+    return res.send(twiml.toString());
+
+  } catch (err) {
+    console.error('❌ [TwilioVoice] Error in staff transfer:', err);
+    const twiml = new twilio.twiml.VoiceResponse();
+    twiml.say('Sorry, we encountered an error. Please hang up and try again.');
+    twiml.hangup();
+    res.type('text/xml');
+    return res.send(twiml.toString());
+  }
+});
+
+/**
+ * POST /twilio/voice/transfer-callback
+ * Handles the callback after a dial attempt (answered, busy, no-answer, etc.)
+ */
+router.post('/voice/transfer-callback', async (req, res) => {
+  try {
+    const businessId = req.query.businessId;
+    const staffName = req.query.staffName || 'that person';
+    const dialCallStatus = req.body.DialCallStatus;
+    
+    console.log(`📞 [TwilioVoice] Transfer callback - Status: ${dialCallStatus}, Business: ${businessId}`);
+    
+    const twiml = new twilio.twiml.VoiceResponse();
+    
+    if (dialCallStatus === 'completed') {
+      // Call was answered and completed successfully
+      twiml.say('Thank you for calling. Have a great day!');
+      twiml.hangup();
+    } else {
+      // No answer, busy, or failed - return to agent for voicemail
+      twiml.say(`It looks like ${staffName} isn't available right now. Let me take a message for you.`);
+      // Reconnect to media stream for voicemail collection
+      // The WebSocket connection should still be active to collect voicemail
+      twiml.redirect({
+        method: 'POST'
+      }, `/twilio/voice/return-to-agent?businessId=${businessId}`);
+    }
+    
+    res.type('text/xml');
+    return res.send(twiml.toString());
+    
+  } catch (err) {
+    console.error('❌ [TwilioVoice] Error in transfer callback:', err);
+    const twiml = new twilio.twiml.VoiceResponse();
+    twiml.say('Thank you for calling. Have a great day!');
+    twiml.hangup();
+    res.type('text/xml');
+    return res.send(twiml.toString());
+  }
+});
+
+/**
+ * POST /twilio/voice/return-to-agent
+ * Returns caller to the AI agent after failed transfer
+ */
+router.post('/voice/return-to-agent', async (req, res) => {
+  try {
+    const businessId = req.query.businessId;
+    
+    console.log(`📞 [TwilioVoice] Returning to agent for business: ${businessId}`);
+    
+    // Initialize business config service if needed
+    if (!businessConfigService.isInitialized()) {
+      await businessConfigService.initialize();
+    }
+
+    // Get business configuration
+    const businessConfig = businessConfigService.getBusinessConfig(businessId);
+    
+    // Rebuild WebSocket URL
+    const forwardedHost = req.headers['x-forwarded-host'];
+    const rawHost = (forwardedHost ? forwardedHost.split(',')[0] : req.get('host')) || '';
+    const host = rawHost.replace(/^https?:\/\//, '').replace(/\/$/, '');
+    const protoHeader = (req.headers['x-forwarded-proto'] || req.protocol || '').toString();
+    const proto = protoHeader.split(',')[0].trim().toLowerCase();
+    const scheme = proto === 'https' ? 'wss' : 'wss';
+    const streamUrl = `${scheme}://${host}/twilio-media`;
+    
+    const twiml = new twilio.twiml.VoiceResponse();
+    const connect = twiml.connect();
+    const stream = connect.stream({ url: streamUrl });
+    
+    // Pass business context and indicate this is a return from transfer
+    stream.parameter({ name: 'businessId', value: businessId });
+    stream.parameter({ name: 'returnFromTransfer', value: 'true' });
+    
+    res.type('text/xml');
+    return res.send(twiml.toString());
+    
+  } catch (err) {
+    console.error('❌ [TwilioVoice] Error returning to agent:', err);
+    const twiml = new twilio.twiml.VoiceResponse();
+    twiml.say('Sorry, we encountered an error. Please hang up and call back.');
+    twiml.hangup();
+    res.type('text/xml');
+    return res.send(twiml.toString());
+  }
+});
+
+/**
  * POST /twilio/voice/test
  * Test endpoint for Superior Fencing - hardcodes businessId to 'superior-fencing'
  * No phone number routing needed - all calls go directly to Superior Fencing agent
