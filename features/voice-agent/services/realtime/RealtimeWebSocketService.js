@@ -42,7 +42,7 @@ class RealtimeWebSocketService extends EventEmitter {
       normal: {
         threshold: 0.6,
         prefix_padding_ms: 300,
-        silence_duration_ms: 1000,
+        silence_duration_ms: 700,
         create_response: true,
         interrupt_response: true
       },
@@ -378,13 +378,13 @@ class RealtimeWebSocketService extends EventEmitter {
           description: `CRITICAL: ALWAYS call this function first when customer provides a phone number. 
 
 This function returns JSON like:
-- Valid: {"valid": true, "cleaned_phone": "646 248 2011", "message": "..."}
+- Valid: {"valid": true, "cleaned_phone": "646 248 2011", "phone_for_speech": "6-4-6-2-4-8-2-0-1-1", "message": "..."}
 - Invalid: {"valid": false, "error": "invalid_country_code", "message": "Please provide a US phone number. If you included a country code, it must be +1 or 1."}
 
 INSTRUCTIONS:
 1. Call this function with the raw phone number
 2. Parse the result JSON
-3. If valid===true: Say "Thanks — I have your phone number as [cleaned_phone]. Is that correct?"
+3. If valid===true: Say "Thanks — I have your phone number as [phone_for_speech]. Is that correct?" (ALWAYS use phone_for_speech, NOT cleaned_phone)
 4. If valid===false: Say EXACTLY what's in the "message" field. DO NOT say "couldn't hear" - the phone was heard fine, it just failed validation.
 
 EXAMPLES:
@@ -432,19 +432,28 @@ Without calling this function, the information is NOT saved and will NOT appear 
               },
               phone: {
                 type: 'string',
-                description: 'Customer phone number - MUST be the cleaned_phone from validate_phone_number result'
+                description: 'Customer phone number - MUST be the cleaned_phone from validate_phone_number result. When confirming phone numbers back to the customer, use the phone_for_speech field from the function response (digit-by-digit format like "5-5-5-4-4-4-5-0-5-0") instead of the stored phone format.'
               },
               reason: {
                 type: 'string',
-                description: 'Reason for calling (e.g., fence repair, new fence installation, gate work, estimate)'
+                description: 'Reason for calling - ONLY use what the customer explicitly states, never assume or guess'
               }
             }
           }
         },
         {
           type: 'function',
+          name: 'get_collection_status',
+          description: 'Get the current collection status - returns booleans indicating what information has been collected. This function is automatically called before you respond, but you can also call it manually. Use these booleans to determine what to ask for next.',
+          parameters: {
+            type: 'object',
+            properties: {}
+          }
+        },
+        {
+          type: 'function',
           name: 'end_conversation',
-          description: 'End the conversation ONLY after you have asked "Is there anything else I can help you with?" or similar, and the user confirms they are done (e.g., says "no", "that\'s all", "nothing else", "I\'m good", "no thanks", etc.). IMPORTANT: Always ask if they need anything else first before calling this function. Do NOT call this function if the user just says "thanks" or "goodbye" without first asking if they need anything else.',
+          description: '🚨 CRITICAL REQUIREMENTS BEFORE CALLING THIS FUNCTION:\n1. You MUST have collected ALL required information: name (confirmed), reason, and phone number\n2. You MUST have asked "Is there anything else I can help you with?" or similar\n3. The user MUST confirm they are done (e.g., says "no", "that\'s all", "nothing else", "I\'m good", "no thanks", etc.)\n\nABSOLUTE PROHIBITION: Do NOT call this function if:\n- Name is not collected or not confirmed\n- Reason is not collected\n- Phone number is not collected\n- The user just says "thanks" or "goodbye" without first asking if they need anything else\n\nIf this function returns an error about missing information, you MUST collect the missing information before attempting to end the conversation again.',
           parameters: {
             type: 'object',
             properties: {}
@@ -522,10 +531,10 @@ Without calling this function, the information is NOT saved and will NOT appear 
           }
         }
       },
-      {
-        type: 'function',
-        name: 'end_conversation',
-        description: 'End the conversation ONLY after you have asked "Is there anything else I can help you with?" or similar, and the user confirms they are done (e.g., says "no", "that\'s all", "nothing else", "I\'m good", "no thanks", etc.). IMPORTANT: Always ask if they need anything else first before calling this function. Do NOT call this function if the user just says "thanks" or "goodbye" without first asking if they need anything else.',
+        {
+          type: 'function',
+          name: 'end_conversation',
+          description: '🚨 CRITICAL REQUIREMENTS BEFORE CALLING THIS FUNCTION:\n1. You MUST have collected ALL required information: name (confirmed), reason, and phone number\n2. You MUST have asked "Is there anything else I can help you with?" or similar\n3. The user MUST confirm they are done (e.g., says "no", "that\'s all", "nothing else", "I\'m good", "no thanks", etc.)\n\nABSOLUTE PROHIBITION: Do NOT call this function if:\n- Name is not collected or not confirmed\n- Reason is not collected\n- Phone number is not collected\n- The user just says "thanks" or "goodbye" without first asking if they need anything else\n\nIf this function returns an error about missing information, you MUST collect the missing information before attempting to end the conversation again.',
         parameters: {
           type: 'object',
           properties: {}
@@ -713,6 +722,9 @@ Without calling this function, the information is NOT saved and will NOT appear 
         // Add to conversation history
         this.stateManager.addMessage(sessionId, 'user', event.transcript);
 
+        // Auto-inject collection status before agent responds
+        await this.autoInjectCollectionStatus(sessionData);
+
         // FALLBACK: Check if transcription contains name information and OpenAI didn't call update_user_info
         // DISABLED: This fallback causes conversation state corruption by injecting fake function call outputs
         // that OpenAI never requested, leading to hallucinations and re-asking for already collected info.
@@ -895,6 +907,10 @@ Without calling this function, the information is NOT saved and will NOT appear 
 
         case 'update_user_info':
           result = await this.handleUserInfo(sessionId, args);
+          break;
+
+        case 'get_collection_status':
+          result = await this.handleGetCollectionStatus(sessionId, args);
           break;
 
         case 'end_conversation':
@@ -1312,6 +1328,28 @@ Without calling this function, the information is NOT saved and will NOT appear 
   }
 
   /**
+   * Format phone number for speech (digit-by-digit with dashes)
+   * Converts "555 444 5050" → "5-5-5-4-4-4-5-0-5-0"
+   * @param {string} phone - Phone number in any format (e.g., "555 444 5050", "555-444-5050")
+   * @returns {string} Phone number formatted for speech (e.g., "5-5-5-4-4-4-5-0-5-0")
+   */
+  formatPhoneForSpeech(phone) {
+    if (!phone) return null;
+    
+    // Remove all non-digit characters
+    const digitsOnly = phone.replace(/\D/g, '');
+    
+    // If it's not 10 digits, return as-is (shouldn't happen for validated numbers)
+    if (digitsOnly.length !== 10) {
+      console.warn(`⚠️ [PhoneFormat] Unexpected phone length: ${digitsOnly.length} for ${phone}`);
+      return phone;
+    }
+    
+    // Join each digit with dashes
+    return digitsOnly.split('').join('-');
+  }
+
+  /**
    * Handle phone number validation function
    * Validates phone number according to North American Numbering Plan (NANP) rules
    */
@@ -1405,12 +1443,15 @@ Without calling this function, the information is NOT saved and will NOT appear 
 
       // Format the phone number for confirmation: (XXX) XXX-XXXX
       const formattedPhone = `${areaCode} ${exchangeCode} ${subscriberNumber}`;
+      const phoneForSpeech = this.formatPhoneForSpeech(formattedPhone);
 
       console.log('✅ [PhoneValidation] Valid phone number:', formattedPhone);
+      console.log('📞 [PhoneValidation] Phone for speech:', phoneForSpeech);
 
       return {
         valid: true,
         cleaned_phone: formattedPhone,
+        phone_for_speech: phoneForSpeech,
         original: raw_phone,
         message: `Phone number ${formattedPhone} is valid.`
       };
@@ -1473,31 +1514,6 @@ Without calling this function, the information is NOT saved and will NOT appear 
 
       if (reason) {
         console.log('👤 [UserInfo] Setting reason:', reason);
-        
-        // Validate reason for Superior Fencing (must be related to fencing services)
-        const businessId = this.tenantContextManager ? this.tenantContextManager.getBusinessId(sessionId) : null;
-        if (businessId === 'superior-fencing') {
-          // Check if reason is related to fencing services
-          const reasonLower = reason.toLowerCase();
-          const relatedKeywords = [
-            'fence', 'fencing', 'gate', 'installation', 'repair', 'maintenance',
-            'estimate', 'quote', 'wood', 'vinyl', 'chain', 'privacy', 'deck',
-            'post', 'panel', 'railing', 'perimeter', 'yard', 'property', 'boundary'
-          ];
-          
-          const hasRelatedKeyword = relatedKeywords.some(keyword => reasonLower.includes(keyword));
-          
-          if (!hasRelatedKeyword) {
-            console.log('❌ [UserInfo] Reason validation failed - unrelated to fencing services:', reason);
-            return {
-              success: false,
-              message: "I'm sorry, but Superior Fence & Construction specializes in fencing services, gate installation and repair, and related services. Could you please tell me what you're calling about regarding fencing, gates, or property boundaries?"
-            };
-          }
-          
-          console.log('✅ [UserInfo] Reason validation passed for Superior Fencing');
-        }
-        
         updates.reason = reason;
       }
 
@@ -1597,17 +1613,42 @@ Without calling this function, the information is NOT saved and will NOT appear 
         }
       }
 
+      // Build collection status message
+      const collectionStatus = [];
+      if (sessionObj.userInfo.name && sessionObj.userInfo.nameConfirmed) {
+        collectionStatus.push(`Name: ${sessionObj.userInfo.name} (COLLECTED)`);
+      } else {
+        collectionStatus.push('Name: NOT COLLECTED');
+      }
+      if (sessionObj.userInfo.reason) {
+        collectionStatus.push(`Reason: ${sessionObj.userInfo.reason} (COLLECTED)`);
+      } else {
+        collectionStatus.push('Reason: NOT COLLECTED');
+      }
+      if (sessionObj.userInfo.phone && sessionObj.userInfo.phone !== 'client:Anonymous') {
+        collectionStatus.push(`Phone: ${sessionObj.userInfo.phone} (COLLECTED)`);
+      } else {
+        collectionStatus.push('Phone: NOT COLLECTED');
+      }
+
+      const statusMessage = `\n\n🚨 COLLECTION STATUS - CHECK THIS BEFORE ASKING QUESTIONS 🚨\n${collectionStatus.join(', ')}\n\nCRITICAL INSTRUCTIONS:\n- If ALL items show (COLLECTED) → Proceed to final confirmation or ask "Is there anything else I can help you with?"\n- If any item shows NOT COLLECTED → Only ask for that missing item\n- NEVER ask "What are you calling about today?" if Reason shows (COLLECTED)\n- NEVER ask for name if Name shows (COLLECTED)\n- NEVER ask for phone if Phone shows (COLLECTED)`;
+
       return {
         success: true,
-        message: message + instructions,
+        message: message + instructions + statusMessage,
         userInfo: {
           ...sessionObj.userInfo,
           // Don't include raw email/name in response if already confirmed to avoid model repeating it
           ...(emailAlreadyConfirmed ? { email: undefined } : {}),
-          ...(nameAlreadyConfirmed ? { name: undefined } : {})
+          ...(nameAlreadyConfirmed ? { name: undefined } : {}),
+          // Add phone_for_speech if phone exists
+          ...(sessionObj.userInfo?.phone ? { 
+            phone_for_speech: this.formatPhoneForSpeech(sessionObj.userInfo.phone) 
+          } : {})
         },
         emailConfirmed: sessionObj.userInfo?.emailConfirmed || false,
         nameConfirmed: sessionObj.userInfo?.nameConfirmed || false,
+        collectionStatus: collectionStatus.join(', '),
         note: emailAlreadyConfirmed || nameAlreadyConfirmed
           ? 'IMPORTANT: The email and/or name shown above were already confirmed. Do NOT repeat, spell out, or mention them in your response. Just acknowledge and continue.'
           : undefined
@@ -1619,6 +1660,102 @@ Without calling this function, the information is NOT saved and will NOT appear 
         success: false,
         error: error.message
       };
+    }
+  }
+
+  /**
+   * Handle get collection status function - returns booleans for what's collected
+   */
+  async handleGetCollectionStatus(sessionId, args) {
+    try {
+      const session = this.stateManager.getSession(sessionId);
+      const userInfo = session?.userInfo || {};
+
+      const hasName = !!(userInfo.name && userInfo.nameConfirmed);
+      const hasReason = !!(userInfo.reason && userInfo.reason.trim() !== '');
+      const hasPhone = !!(userInfo.phone && userInfo.phone !== 'client:Anonymous' && userInfo.phone.trim() !== '');
+
+      return {
+        success: true,
+        nameCollected: hasName,
+        reasonCollected: hasReason,
+        phoneCollected: hasPhone,
+        allCollected: hasName && hasReason && hasPhone,
+        message: `Collection Status: Name=${hasName}, Reason=${hasReason}, Phone=${hasPhone}. ${hasName && hasReason && hasPhone 
+          ? 'All information collected. Proceed to final confirmation or ask if there is anything else.' 
+          : `Missing: ${!hasName ? 'Name ' : ''}${!hasReason ? 'Reason ' : ''}${!hasPhone ? 'Phone' : ''}. Only ask for missing items.`}`
+      };
+    } catch (error) {
+      console.error('❌ [CollectionStatus] Error:', error);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Automatically inject collection status before agent responds
+   */
+  async autoInjectCollectionStatus(sessionData) {
+    try {
+      const { openaiWs, sessionId } = sessionData;
+      if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) {
+        return;
+      }
+
+      const session = this.stateManager.getSession(sessionId);
+      const userInfo = session?.userInfo || {};
+
+      const hasName = !!(userInfo.name && userInfo.nameConfirmed);
+      const hasReason = !!(userInfo.reason && userInfo.reason.trim() !== '');
+      const hasPhone = !!(userInfo.phone && userInfo.phone !== 'client:Anonymous' && userInfo.phone.trim() !== '');
+
+      // Generate a shorter call_id (max 32 chars) using base36 timestamp + short random
+      const shortTimestamp = Date.now().toString(36); // Base36 is shorter than decimal
+      const shortRandom = Math.random().toString(36).substr(2, 4); // 4 char random
+      const callId = `ast${shortTimestamp}${shortRandom}`.substring(0, 32); // Max 32 chars
+
+      // Create a function call to get_collection_status
+      const functionCall = {
+        type: 'conversation.item.create',
+        item: {
+          type: 'function_call',
+          name: 'get_collection_status',
+          arguments: '{}',
+          call_id: callId
+        }
+      };
+
+      openaiWs.send(JSON.stringify(functionCall));
+
+      // Immediately send the function result
+      const functionResult = {
+        type: 'conversation.item.create',
+        item: {
+          type: 'function_call_output',
+          call_id: callId,
+          output: JSON.stringify({
+            success: true,
+            nameCollected: hasName,
+            reasonCollected: hasReason,
+            phoneCollected: hasPhone,
+            allCollected: hasName && hasReason && hasPhone,
+            message: `Collection Status: Name=${hasName}, Reason=${hasReason}, Phone=${hasPhone}. ${hasName && hasReason && hasPhone 
+              ? 'All information collected. Proceed to final confirmation or ask if there is anything else.' 
+              : `Missing: ${!hasName ? 'Name ' : ''}${!hasReason ? 'Reason ' : ''}${!hasPhone ? 'Phone' : ''}. Only ask for missing items.`}`
+          })
+        }
+      };
+
+      // Send function result immediately (no delay)
+      if (openaiWs.readyState === WebSocket.OPEN) {
+        openaiWs.send(JSON.stringify(functionResult));
+        console.log('📊 [RealtimeWS] Auto-injected collection status:', { hasName, hasReason, hasPhone });
+      }
+
+    } catch (error) {
+      console.error('❌ [RealtimeWS] Failed to auto-inject collection status:', error);
     }
   }
 
@@ -1637,12 +1774,39 @@ Without calling this function, the information is NOT saved and will NOT appear 
         };
       }
 
+      // Get user's name for personalization
+      const session = this.stateManager.getSession(sessionId);
+      const userInfo = session?.userInfo || {};
+
+      // CRITICAL: Check if all required information is collected before allowing call to end
+      const hasName = userInfo.name && userInfo.nameConfirmed;
+      const hasReason = userInfo.reason && userInfo.reason.trim() !== '';
+      const hasPhone = userInfo.phone && userInfo.phone !== 'client:Anonymous' && userInfo.phone.trim() !== '';
+
+      const missingInfo = [];
+      if (!hasName) missingInfo.push('name');
+      if (!hasReason) missingInfo.push('reason');
+      if (!hasPhone) missingInfo.push('phone');
+
+      if (missingInfo.length > 0) {
+        console.log('❌ [EndConversation] Cannot end call - missing information:', missingInfo);
+        const missingList = missingInfo.join(', ');
+        return {
+          success: false,
+          conversationEnding: false,
+          error: 'missing_information',
+          message: `🚨 CRITICAL: Cannot end the call yet. You must collect ALL required information first. Missing: ${missingList}. Please collect the missing information before ending the conversation. Do NOT end the call until you have collected: name, reason, and phone number.`,
+          missingInfo: missingInfo
+        };
+      }
+
+      // All information collected - proceed with ending
+      console.log('✅ [EndConversation] All information collected, proceeding to end call');
+
       // Mark session for closing after response completes
       sessionData.pendingClose = true;
 
-      // Get user's name for personalization
-      const session = this.stateManager.getSession(sessionId);
-      const userName = session?.userInfo?.name || 'there';
+      const userName = userInfo.name || 'there';
 
       console.log('👋 [EndConversation] Session marked for closing, user:', userName);
 
