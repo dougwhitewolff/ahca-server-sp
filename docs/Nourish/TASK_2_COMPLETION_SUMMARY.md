@@ -381,3 +381,4 @@ The handler needs to be integrated into the conversation flow manager (Conversat
 - Spanish support note: Handler is ready for Spanish (from config), but FAQ answers are in English (can be translated if needed)
 
 
+
