@@ -57,9 +57,8 @@
     },
     "emergencyContact": {
       "available": true,
-      "phone": "+15035501817", 
-      "instructions": "Press # for emergency or time-sensitive issues",
-      "note": "TODO: Replace with actual Superior Fencing emergency contact number"
+      "phone": "+15174492949", 
+      "instructions": "Press # for emergency or time-sensitive issues"
     }
   },
   
@@ -80,8 +79,8 @@
     "note": "Currently using SherpaPrompt's Twilio number (+15035501817). Twilio developers need to set up dedicated number for Superior Fencing when ready.",
     "emergencyHandling": {
       "enabled": true,
-      "trigger": "user presses # or mentions emergency",
-      "action": "Route to emergency handler function"
+      "trigger": "user presses # key",
+      "action": "Route to emergency handler function and transfer call"
     }
   }
 }

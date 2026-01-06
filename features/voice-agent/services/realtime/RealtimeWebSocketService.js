@@ -40,7 +40,7 @@ class RealtimeWebSocketService extends EventEmitter {
     this.VAD_CONFIG = {
       // Normal VAD settings (when assistant is not speaking)
       normal: {
-        threshold: 0.6,
+        threshold: 0.8,
         prefix_padding_ms: 300,
         silence_duration_ms: 700,
         create_response: true,
@@ -50,7 +50,7 @@ class RealtimeWebSocketService extends EventEmitter {
       assistantSpeaking: {
         threshold: 0.9,                    // Higher threshold (requires more confident speech)
         prefix_padding_ms: 300,
-        silence_duration_ms: 2000,        // Longer silence required (2.5s vs 1s)
+        silence_duration_ms: 800,        // Longer silence required (2.5s vs 1s)
         create_response: true,
         interrupt_response: true
       }
@@ -448,6 +448,28 @@ Without calling this function, the information is NOT saved and will NOT appear 
           parameters: {
             type: 'object',
             properties: {}
+          }
+        },
+        {
+          type: 'function',
+          name: 'get_company_info',
+          description: `Get company information including business hours, phone number, address, services, email, and website. ALWAYS call this function when the customer asks about:
+- Business hours ("What are your hours?", "When are you open?")
+- Phone number ("What's your phone number?", "How can I reach you?")
+- Address/Location ("Where are you located?", "What's your address?")
+- Services ("What services do you offer?", "What do you do?")
+- Email or website
+
+Do NOT use hardcoded company information from the prompt - always call this function to get the current information from the system.`,
+          parameters: {
+            type: 'object',
+            properties: {
+              info_type: {
+                type: 'string',
+                enum: ['all', 'hours', 'phone', 'address', 'services', 'email', 'website'],
+                description: 'Type of information requested. Use "all" to get everything, or specify a specific type like "hours", "phone", "address", "services", "email", or "website".'
+              }
+            }
           }
         },
         {
@@ -911,6 +933,10 @@ Without calling this function, the information is NOT saved and will NOT appear 
 
         case 'get_collection_status':
           result = await this.handleGetCollectionStatus(sessionId, args);
+          break;
+
+        case 'get_company_info':
+          result = await this.handleCompanyInfo(sessionId, args);
           break;
 
         case 'end_conversation':
@@ -1508,8 +1534,11 @@ Without calling this function, the information is NOT saved and will NOT appear 
       }
 
       if (phone) {
-        console.log(' [UserInfo] Setting phone:', phone);
+        console.log('📞 [UserInfo] Setting phone:', phone);
         updates.phone = phone;
+        // Mark as confirmed when customer provides/confirms phone via update_user_info
+        updates.phoneConfirmed = true;
+        console.log('✅ [UserInfo] Phone confirmed via update_user_info function call');
       }
 
       if (reason) {
@@ -1664,6 +1693,84 @@ Without calling this function, the information is NOT saved and will NOT appear 
   }
 
   /**
+   * Handle get company info function - returns company information from config
+   */
+  async handleCompanyInfo(sessionId, args) {
+    try {
+      const businessId = this.tenantContextManager?.getBusinessId(sessionId);
+      const businessConfig = this.businessConfigService?.getBusinessConfig(businessId);
+      
+      if (!businessConfig?.companyInfo) {
+        console.warn('⚠️ [CompanyInfo] No company info found in config');
+        return { 
+          success: false, 
+          error: 'Company information not available' 
+        };
+      }
+      
+      const { info_type = 'all' } = args;
+      const companyInfo = businessConfig.companyInfo;
+      
+      console.log(`📋 [CompanyInfo] Requested info type: ${info_type}`);
+      
+      // Format hours for better readability
+      const formatHours = (hours) => {
+        if (!hours) return null;
+        const parts = [];
+        if (hours.monday_friday) parts.push(`Monday-Friday: ${hours.monday_friday}`);
+        if (hours.saturday) parts.push(`Saturday: ${hours.saturday}`);
+        if (hours.sunday) parts.push(`Sunday: ${hours.sunday}`);
+        if (hours.emergency) parts.push(`Emergency Service: ${hours.emergency}`);
+        return parts.join('\n');
+      };
+      
+      // Return specific info type
+      if (info_type !== 'all') {
+        if (info_type === 'hours') {
+          return {
+            success: true,
+            hours: formatHours(companyInfo.hours),
+            hours_raw: companyInfo.hours
+          };
+        }
+        
+        if (info_type === 'services') {
+          return {
+            success: true,
+            services: companyInfo.services || []
+          };
+        }
+        
+        // For phone, address, email, website
+        return {
+          success: true,
+          [info_type]: companyInfo[info_type] || null
+        };
+      }
+      
+      // Return all info
+      return {
+        success: true,
+        name: companyInfo.name,
+        phone: companyInfo.phone,
+        email: companyInfo.email,
+        website: companyInfo.website,
+        address: companyInfo.address,
+        services: companyInfo.services || [],
+        hours: formatHours(companyInfo.hours),
+        hours_raw: companyInfo.hours,
+        emergencyContact: companyInfo.emergencyContact || null
+      };
+    } catch (error) {
+      console.error('❌ [CompanyInfo] Error:', error);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
    * Handle get collection status function - returns booleans for what's collected
    */
   async handleGetCollectionStatus(sessionId, args) {
@@ -1673,7 +1780,7 @@ Without calling this function, the information is NOT saved and will NOT appear 
 
       const hasName = !!(userInfo.name && userInfo.nameConfirmed);
       const hasReason = !!(userInfo.reason && userInfo.reason.trim() !== '');
-      const hasPhone = !!(userInfo.phone && userInfo.phone !== 'client:Anonymous' && userInfo.phone.trim() !== '');
+      const hasPhone = !!(userInfo.phone && userInfo.phone !== 'client:Anonymous' && userInfo.phone.trim() !== '' && userInfo.phoneConfirmed);
 
       return {
         success: true,
@@ -1709,7 +1816,7 @@ Without calling this function, the information is NOT saved and will NOT appear 
 
       const hasName = !!(userInfo.name && userInfo.nameConfirmed);
       const hasReason = !!(userInfo.reason && userInfo.reason.trim() !== '');
-      const hasPhone = !!(userInfo.phone && userInfo.phone !== 'client:Anonymous' && userInfo.phone.trim() !== '');
+      const hasPhone = !!(userInfo.phone && userInfo.phone !== 'client:Anonymous' && userInfo.phone.trim() !== '' && userInfo.phoneConfirmed);
 
       // Generate a shorter call_id (max 32 chars) using base36 timestamp + short random
       const shortTimestamp = Date.now().toString(36); // Base36 is shorter than decimal
@@ -1781,7 +1888,7 @@ Without calling this function, the information is NOT saved and will NOT appear 
       // CRITICAL: Check if all required information is collected before allowing call to end
       const hasName = userInfo.name && userInfo.nameConfirmed;
       const hasReason = userInfo.reason && userInfo.reason.trim() !== '';
-      const hasPhone = userInfo.phone && userInfo.phone !== 'client:Anonymous' && userInfo.phone.trim() !== '';
+      const hasPhone = userInfo.phone && userInfo.phone !== 'client:Anonymous' && userInfo.phone.trim() !== '' && userInfo.phoneConfirmed;
 
       const missingInfo = [];
       if (!hasName) missingInfo.push('name');
