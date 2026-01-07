@@ -455,6 +455,14 @@ class TwilioBridgeService {
     }
 
     try {
+      // Check if call is being redirected - if so, skip hangup to avoid canceling the redirect
+      // We check this.callSidToSession directly (if it exists) or rely on logic that preserves it
+      const entry = this.callSidToSession.get(callSid);
+      if (entry && entry.isRedirecting) {
+        console.log(`⚠️ [TwilioBridge] Skipping hangup for ${callSid} - call is being redirected`);
+        return;
+      }
+
       // eslint-disable-next-line no-console
       console.log(`📞 [TwilioBridge] Hanging up call: ${callSid}`);
       await this.twilioClient.calls(callSid).update({ status: 'completed' });
@@ -518,6 +526,9 @@ class TwilioBridgeService {
       console.log('🚨 [TwilioBridge] Triggering emergency call transfer');
       const sessionBaseUrl = entry.baseUrl || baseUrl || null;
       console.log(`🔗 [TwilioBridge] Using baseUrl for emergency transfer: ${sessionBaseUrl}`);
+
+      // Mark entry as redirecting to prevent hangupCall from canceling the transfer
+      entry.isRedirecting = true;
 
       const emergencyResponse = conversationFlowHandler.emergencyHandler.handleEmergencyCall(
         sessionBusinessId,

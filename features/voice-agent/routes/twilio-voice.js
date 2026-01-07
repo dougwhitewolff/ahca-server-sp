@@ -55,11 +55,29 @@ router.post('/voice/transfer-emergency', async (req, res) => {
 
     console.log(`✅ [TwilioVoice] Transferring call to emergency number: ${emergencyPhone}`);
 
+    // Determine the best Caller ID to use for the transfer
+    // Priority 1: The original caller's number (so staff sees who is calling)
+    // Priority 2: The number they dialed (verified Twilio number)
+    // Priority 3: The configured business number (fallback)
+    let callerId = businessConfig.phoneNumber || businessConfig.companyInfo?.phone; // Default
+    
+    const incomingFrom = req.body.From || req.body.from;
+    const incomingTo = req.body.To || req.body.to;
+
+    // Check if we have a valid phone number (starts with +)
+    if (incomingFrom && incomingFrom.startsWith('+')) {
+      callerId = incomingFrom;
+    } else if (incomingTo && incomingTo.startsWith('+')) {
+      callerId = incomingTo;
+    }
+
+    console.log(`📞 [TwilioVoice] Using Caller ID for transfer: ${callerId}`);
+
     // Create TwiML to transfer the call
     const twiml = new twilio.twiml.VoiceResponse();
     twiml.say('Connecting you with our on-call team now. Please hold.');
     twiml.dial({
-      callerId: businessConfig.phoneNumber || businessConfig.companyInfo?.phone
+      callerId: callerId
     }, emergencyPhone);
     
     // If dial fails, provide fallback
