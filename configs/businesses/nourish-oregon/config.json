@@ -5,7 +5,7 @@
   "description": "Nourish Oregon - Food assistance services for Oregon and Southeast Washington",
   
   "features": {
-    "ragEnabled": true,
+    "ragEnabled": false,
     "appointmentBookingEnabled": false,
     "emergencyCallHandling": false,
     "basicInfoCollection": true,
