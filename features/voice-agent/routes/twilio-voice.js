@@ -361,6 +361,101 @@ router.post('/voice/test', async (req, res) => {
 });
 
 /**
+ * POST /twilio/voice/test-nourish
+ * Test endpoint for Nourish Oregon - hardcodes businessId to 'nourish-oregon'
+ * No phone number routing needed - all calls go directly to Nourish Oregon agent (Jacob)
+ */
+router.post('/voice/test-nourish', async (req, res) => {
+  try {
+    const authToken = process.env.TWILIO_AUTH_TOKEN;
+    const signature = req.header('X-Twilio-Signature');
+
+    // Validate signature if token is provided
+    if (authToken && signature) {
+      const url = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
+      const isValid = twilio.validateRequest(authToken, signature, url, req.body);
+      if (!isValid) {
+        console.error('❌ [TwilioVoice] Invalid Twilio signature');
+        return res.status(403).send('Invalid Twilio signature');
+      }
+    }
+
+    // Extract call data - use defaults for test calls if not provided
+    const from = req.body.From || req.body.from || 'TEST-CLIENT';
+    const to = req.body.To || req.body.to || 'TEST-NOURISH-OREGON';
+    const callSid = req.body.CallSid || req.body.callSid || `test-nourish-${Date.now()}`;
+
+    console.log('🧪 [TwilioVoice] Test call (Nourish Oregon):', { from, to, callSid });
+
+    // Hardcode business ID for Nourish Oregon test endpoint
+    const businessId = 'nourish-oregon';
+
+    // Initialize business config service if needed
+    if (!businessConfigService.isInitialized()) {
+      console.log('🏢 [TwilioVoice] Initializing business config service...');
+      await businessConfigService.initialize();
+    }
+
+    // Get business configuration to validate it exists
+    const businessConfig = businessConfigService.getBusinessConfig(businessId);
+    if (!businessConfig) {
+      console.error(`❌ [TwilioVoice] Business config not found for: ${businessId}`);
+      
+      const twiml = new twilio.twiml.VoiceResponse();
+      twiml.say('Sorry, Nourish Oregon test service is temporarily unavailable. Please try again later.');
+      twiml.hangup();
+      
+      res.type('text/xml');
+      return res.send(twiml.toString());
+    }
+
+    console.log(`✅ [TwilioVoice] Test call routed to Nourish Oregon (${businessConfig.businessName})`);
+
+    // Build WebSocket URL with business context
+    // Prefer forwarded host when behind proxies (ngrok/load balancer)
+    const forwardedHost = req.headers['x-forwarded-host'];
+    const rawHost = (forwardedHost ? forwardedHost.split(',')[0] : req.get('host')) || '';
+    const host = rawHost.replace(/^https?:\/\//, '').replace(/\/$/, '');
+    // Determine scheme from forwarded proto; Twilio requires secure websockets
+    const protoHeader = (req.headers['x-forwarded-proto'] || req.protocol || '').toString();
+    const proto = protoHeader.split(',')[0].trim().toLowerCase();
+    const scheme = proto === 'https' ? 'wss' : 'wss';
+
+    const streamUrl = `${scheme}://${host}/twilio-media`;
+
+    const twiml = new twilio.twiml.VoiceResponse();
+    const connect = twiml.connect();
+    
+    // Configure stream
+    const streamOptions = { url: streamUrl };
+    
+    const stream = connect.stream(streamOptions);
+    
+    // Send business context via Twilio Stream Parameters (available on 'start' event)
+    // Use default values if from/to are not provided by Twilio client
+    stream.parameter({ name: 'businessId', value: businessId });
+    stream.parameter({ name: 'from', value: from || 'TEST-CLIENT' });
+    stream.parameter({ name: 'to', value: to || 'TEST-NOURISH-OREGON' });
+
+    console.log(`🔗 [TwilioVoice] Test WebSocket URL: ${streamUrl} (businessId: ${businessId})`);
+
+    res.type('text/xml');
+    return res.send(twiml.toString());
+    
+  } catch (err) {
+    console.error('❌ [TwilioVoice] Error in Nourish Oregon test endpoint:', err);
+    
+    // Return error TwiML instead of 500 to avoid Twilio retries
+    const twiml = new twilio.twiml.VoiceResponse();
+    twiml.say('Sorry, we are experiencing technical difficulties. Please try again later.');
+    twiml.hangup();
+    
+    res.type('text/xml');
+    return res.send(twiml.toString());
+  }
+});
+
+/**
  * POST /twilio/voice
  * Multi-tenant Twilio Voice webhook that returns TwiML to start a bidirectional Media Stream
  * Identifies business from phone number and passes businessId to WebSocket

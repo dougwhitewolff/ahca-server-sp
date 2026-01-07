@@ -484,6 +484,93 @@ Do NOT use hardcoded company information from the prompt - always call this func
       ];
     }
 
+    // Nourish Oregon has call routing and FAQ handling
+    if (businessId === 'nourish-oregon') {
+      console.log(`🔧 [RealtimeWS] Using Nourish Oregon tools (call routing + FAQ)`);
+      return [
+        {
+          type: 'function',
+          name: 'route_call',
+          description: `Route the caller to the appropriate staff member based on their intent. 
+
+WHEN TO USE: After determining what the caller needs (donations, deliveries, pickup, volunteering, rental assistance, doernbecher, partners, or speak to Betty Brown).
+
+ROUTING RULES:
+- Donations: Route to April
+- Deliveries: Route to Trina  
+- Drive-up/Pickup: Route to Dylan
+- Volunteering: Route to April
+- Rental/Utility Assistance: Route to Jordan
+- Doernbecher: Route to Jordan
+- Partners (food banks, etc.): Route to April
+- Betty Brown: Route to April (she will screen the call)
+- Unknown/Unclear: Route to April (default)
+
+IMPORTANT: Call this function IMMEDIATELY after determining the intent. Do NOT collect name/phone before routing - the staff member will do that.`,
+          parameters: {
+            type: 'object',
+            properties: {
+              intent: {
+                type: 'string',
+                enum: ['donations', 'deliveries', 'pickup', 'volunteering', 'rental_assistance', 'doernbecher', 'partners', 'betty_brown', 'unknown'],
+                description: 'The caller intent category'
+              },
+              reason: {
+                type: 'string',
+                description: 'Brief description of what the caller needs'
+              }
+            },
+            required: ['intent', 'reason']
+          }
+        },
+        {
+          type: 'function',
+          name: 'collect_voicemail',
+          description: `Collect voicemail information when staff member is unavailable. 
+
+WHEN TO USE: Only call this function when explicitly told that the staff member didn't answer.
+
+FLOW:
+1. Ask for name
+2. Ask for phone number
+3. Ask for message/reason
+4. Confirm all information
+5. Call this function to save the voicemail`,
+          parameters: {
+            type: 'object',
+            properties: {
+              name: {
+                type: 'string',
+                description: 'Caller name'
+              },
+              phone: {
+                type: 'string',
+                description: 'Caller phone number'
+              },
+              reason: {
+                type: 'string',
+                description: 'Message or reason for calling'
+              },
+              intended_recipient: {
+                type: 'string',
+                description: 'Staff member the call was intended for'
+              }
+            },
+            required: ['name', 'phone', 'reason', 'intended_recipient']
+          }
+        },
+        {
+          type: 'function',
+          name: 'end_conversation',
+          description: 'End the conversation. Only call this after the caller confirms they have nothing else or after voicemail is collected.',
+          parameters: {
+            type: 'object',
+            properties: {}
+          }
+        }
+      ];
+    }
+
     // SherpaPrompt gets full tools (RAG + appointment booking)
     console.log(`🔧 [RealtimeWS] Using SherpaPrompt tools (full feature set)`);
     return [
@@ -937,6 +1024,14 @@ Do NOT use hardcoded company information from the prompt - always call this func
 
         case 'get_company_info':
           result = await this.handleCompanyInfo(sessionId, args);
+          break;
+
+        case 'route_call':
+          result = await this.handleRouteCall(sessionData, args);
+          break;
+
+        case 'collect_voicemail':
+          result = await this.handleCollectVoicemail(sessionId, args);
           break;
 
         case 'end_conversation':
@@ -1863,6 +1958,176 @@ Do NOT use hardcoded company information from the prompt - always call this func
 
     } catch (error) {
       console.error('❌ [RealtimeWS] Failed to auto-inject collection status:', error);
+    }
+  }
+
+  /**
+   * Handle call routing to staff members (Nourish Oregon)
+   */
+  async handleRouteCall(sessionData, args) {
+    try {
+      const { sessionId, twilioCallSid } = sessionData;
+      const { intent, reason } = args;
+      
+      console.log(`📞 [RouteCall] Routing call for intent: ${intent}, reason: ${reason}`);
+      
+      if (!twilioCallSid) {
+        console.error('❌ [RouteCall] No Twilio call SID available');
+        return {
+          success: false,
+          error: 'Cannot route call - not a phone call'
+        };
+      }
+
+      // Get business ID
+      const businessId = this.tenantContextManager?.getBusinessId(sessionId);
+      if (businessId !== 'nourish-oregon') {
+        return {
+          success: false,
+          error: 'Call routing only available for Nourish Oregon'
+        };
+      }
+
+      // Get business config for staff phone numbers
+      const businessConfig = this.businessConfigService?.getBusinessConfig(businessId);
+      if (!businessConfig) {
+        return {
+          success: false,
+          error: 'Business configuration not found'
+        };
+      }
+
+      // Map intent to staff member
+      const intentToStaff = {
+        donations: { name: 'April', phone: process.env.NOURISH_OREGON_APRIL_PHONE },
+        deliveries: { name: 'Trina', phone: process.env.NOURISH_OREGON_TRINA_PHONE },
+        pickup: { name: 'Dylan', phone: process.env.NOURISH_OREGON_DYLAN_PHONE },
+        volunteering: { name: 'April', phone: process.env.NOURISH_OREGON_APRIL_PHONE },
+        rental_assistance: { name: 'Jordan', phone: process.env.NOURISH_OREGON_JORDAN_PHONE },
+        doernbecher: { name: 'Jordan', phone: process.env.NOURISH_OREGON_JORDAN_PHONE },
+        partners: { name: 'April', phone: process.env.NOURISH_OREGON_APRIL_PHONE },
+        betty_brown: { name: 'April', phone: process.env.NOURISH_OREGON_APRIL_PHONE },
+        unknown: { name: 'April', phone: process.env.NOURISH_OREGON_APRIL_PHONE }
+      };
+
+      const staffInfo = intentToStaff[intent];
+      if (!staffInfo || !staffInfo.phone) {
+        console.error(`❌ [RouteCall] No staff member found for intent: ${intent}`);
+        return {
+          success: false,
+          error: `Unable to route call for intent: ${intent}`
+        };
+      }
+
+      console.log(`📞 [RouteCall] Routing to ${staffInfo.name} (${staffInfo.phone})`);
+
+      // Initialize call forwarding handler if not already done
+      if (!this.callForwardingHandler) {
+        const { CallForwardingHandler } = require('../integrations/CallForwardingHandler');
+        this.callForwardingHandler = new CallForwardingHandler();
+      }
+
+      // Get base URL from session or headers
+      const baseUrl = sessionData.baseUrl || process.env.PUBLIC_BASE_URL || process.env.BASE_URL || process.env.NGROK_URL;
+
+      // Trigger call forward using Twilio REST API
+      const forwardSuccess = await this.callForwardingHandler.redirectCallToStaff(
+        twilioCallSid,
+        businessId,
+        staffInfo.phone,
+        staffInfo.name,
+        baseUrl
+      );
+
+      if (forwardSuccess) {
+        // Log the routing
+        this.callForwardingHandler.logCallForwarding(businessId, sessionId, staffInfo.name, intent);
+
+        return {
+          success: true,
+          message: `Transferring you to ${staffInfo.name} now. Please hold.`,
+          staffName: staffInfo.name,
+          intent: intent
+        };
+      } else {
+        return {
+          success: false,
+          error: 'Failed to forward call',
+          message: `I'm having trouble connecting you to ${staffInfo.name}. Please hold while I try again.`
+        };
+      }
+
+    } catch (error) {
+      console.error('❌ [RouteCall] Error:', error);
+      return {
+        success: false,
+        error: error.message,
+        message: 'I'm having trouble routing your call. Please hold for a moment.'
+      };
+    }
+  }
+
+  /**
+   * Handle voicemail collection (Nourish Oregon)
+   */
+  async handleCollectVoicemail(sessionId, args) {
+    try {
+      const { name, phone, reason, intended_recipient } = args;
+      
+      console.log(`📞 [Voicemail] Collecting voicemail for ${name} (${phone}) - ${reason}`);
+      
+      // Get business ID
+      const businessId = this.tenantContextManager?.getBusinessId(sessionId);
+      if (businessId !== 'nourish-oregon') {
+        return {
+          success: false,
+          error: 'Voicemail collection only available for Nourish Oregon'
+        };
+      }
+
+      // Store voicemail info in session
+      this.stateManager.updateUserInfo(sessionId, {
+        name,
+        phone,
+        reason,
+        voicemail: true,
+        intendedRecipient: intended_recipient
+      });
+
+      // Send SMS notifications
+      if (this.smsService && this.smsService.isReady()) {
+        const aprilPhone = process.env.NOURISH_OREGON_APRIL_PHONE;
+        const messagingServiceSid = process.env.TWILIO_MESSAGING_SERVICE_SID;
+
+        const voicemailMessage = `Nourish Oregon Voicemail:\nFrom: ${name}\nPhone: ${phone}\nFor: ${intended_recipient}\nMessage: ${reason}`;
+
+        // Send to April
+        if (aprilPhone) {
+          await this.smsService.sendMessage(aprilPhone, voicemailMessage, messagingServiceSid);
+          console.log('✅ [Voicemail] SMS sent to April');
+        }
+
+        // Send to intended recipient if different
+        const staffPhoneEnvVar = `NOURISH_OREGON_${intended_recipient.toUpperCase()}_PHONE`;
+        const staffPhone = process.env[staffPhoneEnvVar];
+        if (staffPhone && staffPhone !== aprilPhone) {
+          await this.smsService.sendMessage(staffPhone, voicemailMessage, messagingServiceSid);
+          console.log(`✅ [Voicemail] SMS sent to ${intended_recipient}`);
+        }
+      }
+
+      return {
+        success: true,
+        message: `Thank you, ${name}. I've recorded your message for ${intended_recipient}. They'll get back to you at ${phone}.`
+      };
+
+    } catch (error) {
+      console.error('❌ [Voicemail] Error:', error);
+      return {
+        success: false,
+        error: error.message,
+        message: 'I had trouble recording that. Could you please repeat your information?'
+      };
     }
   }
 
