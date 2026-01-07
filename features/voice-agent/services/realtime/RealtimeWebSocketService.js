@@ -154,6 +154,7 @@ class RealtimeWebSocketService extends EventEmitter {
         clientWs,
         openaiWs,
         twilioCallSid: metadata.twilioCallSid || null, // Store Twilio CallSid for bridge communication
+        baseUrl: metadata.baseUrl || null, // Store base URL for call forwarding
         isConnected: false,
         isResponding: false,  // Track if AI is currently responding
         activeResponseId: null,  // Track active response ID for cancellation
@@ -491,22 +492,27 @@ Do NOT use hardcoded company information from the prompt - always call this func
         {
           type: 'function',
           name: 'route_call',
-          description: `Route the caller to the appropriate staff member based on their intent. 
+          description: `🚨 CRITICAL: Route the caller IMMEDIATELY when intent is detected. Do NOT ask clarifying questions.
 
-WHEN TO USE: After determining what the caller needs (donations, deliveries, pickup, volunteering, rental assistance, doernbecher, partners, or speak to Betty Brown).
+WHEN TO USE: As soon as caller mentions donations, deliveries, pickup, volunteering, etc.
+
+WORKFLOW:
+1. Caller says: "I have questions about food delivery"
+2. You say: "Let me connect you with Trina who can help you with that."
+3. You call: route_call({intent: "deliveries", reason: "questions about food delivery"})
 
 ROUTING RULES:
-- Donations: Route to April
-- Deliveries: Route to Trina  
-- Drive-up/Pickup: Route to Dylan
-- Volunteering: Route to April
-- Rental/Utility Assistance: Route to Jordan
-- Doernbecher: Route to Jordan
-- Partners (food banks, etc.): Route to April
-- Betty Brown: Route to April (she will screen the call)
-- Unknown/Unclear: Route to April (default)
+- Donations → April
+- Deliveries → Trina  
+- Drive-up/Pickup → Dylan
+- Volunteering → April
+- Rental/Utility Assistance → Jordan
+- Doernbecher → Jordan
+- Partners → April
+- Betty Brown → April (screening)
+- Unknown/Unclear → April (default)
 
-IMPORTANT: Call this function IMMEDIATELY after determining the intent. Do NOT collect name/phone before routing - the staff member will do that.`,
+🚨 DO NOT ask "Are you inquiring about timing, status, or something else?" - Just route immediately!`,
           parameters: {
             type: 'object',
             properties: {
@@ -521,42 +527,6 @@ IMPORTANT: Call this function IMMEDIATELY after determining the intent. Do NOT c
               }
             },
             required: ['intent', 'reason']
-          }
-        },
-        {
-          type: 'function',
-          name: 'collect_voicemail',
-          description: `Collect voicemail information when staff member is unavailable. 
-
-WHEN TO USE: Only call this function when explicitly told that the staff member didn't answer.
-
-FLOW:
-1. Ask for name
-2. Ask for phone number
-3. Ask for message/reason
-4. Confirm all information
-5. Call this function to save the voicemail`,
-          parameters: {
-            type: 'object',
-            properties: {
-              name: {
-                type: 'string',
-                description: 'Caller name'
-              },
-              phone: {
-                type: 'string',
-                description: 'Caller phone number'
-              },
-              reason: {
-                type: 'string',
-                description: 'Message or reason for calling'
-              },
-              intended_recipient: {
-                type: 'string',
-                description: 'Staff member the call was intended for'
-              }
-            },
-            required: ['name', 'phone', 'reason', 'intended_recipient']
           }
         },
         {
@@ -1028,10 +998,6 @@ FLOW:
 
         case 'route_call':
           result = await this.handleRouteCall(sessionData, args);
-          break;
-
-        case 'collect_voicemail':
-          result = await this.handleCollectVoicemail(sessionId, args);
           break;
 
         case 'end_conversation':
@@ -2027,8 +1993,15 @@ FLOW:
         this.callForwardingHandler = new CallForwardingHandler();
       }
 
-      // Get base URL from session or headers
+      // Get base URL from session (captured from request headers - always current ngrok URL)
+      // Prioritize sessionData.baseUrl since it reflects the actual incoming request URL
       const baseUrl = sessionData.baseUrl || process.env.PUBLIC_BASE_URL || process.env.BASE_URL || process.env.NGROK_URL;
+
+      // CRITICAL: Mark call as redirecting BEFORE triggering Twilio REST API
+      // This prevents the bridge from hanging up when WebSocket closes during redirect
+      if (this.bridgeService) {
+        this.bridgeService.markCallAsRedirecting(twilioCallSid);
+      }
 
       // Trigger call forward using Twilio REST API
       const forwardSuccess = await this.callForwardingHandler.redirectCallToStaff(
@@ -2062,7 +2035,7 @@ FLOW:
       return {
         success: false,
         error: error.message,
-        message: 'I'm having trouble routing your call. Please hold for a moment.'
+        message: 'I am having trouble routing your call. Please hold for a moment.'
       };
     }
   }
@@ -2118,7 +2091,7 @@ FLOW:
 
       return {
         success: true,
-        message: `Thank you, ${name}. I've recorded your message for ${intended_recipient}. They'll get back to you at ${phone}.`
+        message: `Thank you, ${name}. I have recorded your message for ${intended_recipient}. They will get back to you at ${phone}.`
       };
 
     } catch (error) {

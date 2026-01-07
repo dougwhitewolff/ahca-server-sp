@@ -147,21 +147,34 @@ router.post('/voice/transfer-staff', async (req, res) => {
 
     console.log(`✅ [TwilioVoice] Transferring call to ${staffName}: ${staffPhone}`);
 
-    // Create TwiML to transfer the call
+    // Determine the best Caller ID to use for the transfer
+    // Priority 1: The original caller's number (so staff sees who is calling)
+    // Priority 2: The number they dialed (verified Twilio number)
+    // Priority 3: The configured business number (fallback)
+    let callerId = businessConfig.phoneNumber || businessConfig.companyInfo?.phone;
+    
+    const incomingFrom = req.body.From || req.body.from;
+    const incomingTo = req.body.To || req.body.to;
+
+    // Check if we have a valid phone number (starts with +)
+    if (incomingFrom && incomingFrom.startsWith('+')) {
+      callerId = incomingFrom;
+    } else if (incomingTo && incomingTo.startsWith('+')) {
+      callerId = incomingTo;
+    }
+
+    console.log(`📞 [TwilioVoice] Using Caller ID for transfer: ${callerId}`);
+
+    // Create TwiML to transfer the call (SIMPLE - like emergency transfer)
     const twiml = new twilio.twiml.VoiceResponse();
     twiml.say(`Connecting you with ${staffName} now. Please hold.`);
+    twiml.dial({
+      callerId: callerId
+    }, staffPhone);
     
-    // Set timeout to 30 seconds, then return to agent if no answer
-    const dial = twiml.dial({
-      callerId: businessConfig.phoneNumber || businessConfig.companyInfo?.phone,
-      timeout: 30,
-      action: `/twilio/voice/transfer-callback?businessId=${businessId}&staffName=${encodeURIComponent(staffName)}`,
-      method: 'POST'
-    });
-    dial.number(staffPhone);
-    
-    // If dial fails immediately, provide fallback
-    twiml.say('Sorry, we were unable to connect you. Let me take a message.');
+    // If dial fails, provide fallback
+    twiml.say(`Sorry, we were unable to connect you to ${staffName}. Please hang up and call back.`);
+    twiml.hangup();
     
     res.type('text/xml');
     return res.send(twiml.toString());

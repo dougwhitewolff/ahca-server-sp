@@ -63,7 +63,7 @@ class TwilioBridgeService {
     await this.realtimeWSService.createSession(
       mockWs,
       `twilio-${callSid}`,
-      { twilioCallSid: callSid }
+      { twilioCallSid: callSid, baseUrl: baseUrl }
     );
 
     // Persist caller/callee phone numbers into session user info for later SMS
@@ -545,6 +545,21 @@ class TwilioBridgeService {
 
     } catch (error) {
       console.error('❌ [TwilioBridge] Error handling emergency DTMF:', error);
+    }
+  }
+
+  /**
+   * Mark a call as being redirected to prevent hangup from canceling the transfer
+   * Used for call forwarding (e.g., Nourish Oregon routing to staff)
+   * @param {string} callSid - Twilio call SID
+   */
+  markCallAsRedirecting(callSid) {
+    const entry = this.callSidToSession.get(callSid);
+    if (entry) {
+      entry.isRedirecting = true;
+      console.log(`✅ [TwilioBridge] Marked call ${callSid} as redirecting`);
+    } else {
+      console.warn(`⚠️ [TwilioBridge] Cannot mark call ${callSid} as redirecting - entry not found`);
     }
   }
 }
