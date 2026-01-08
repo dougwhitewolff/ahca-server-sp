@@ -40,9 +40,9 @@ class RealtimeWebSocketService extends EventEmitter {
     this.VAD_CONFIG = {
       // Normal VAD settings (when assistant is not speaking)
       normal: {
-        threshold: 0.8,
+        threshold: 0.6,
         prefix_padding_ms: 300,
-        silence_duration_ms: 700,
+        silence_duration_ms: 600,
         create_response: true,
         interrupt_response: true
       },
@@ -50,7 +50,7 @@ class RealtimeWebSocketService extends EventEmitter {
       assistantSpeaking: {
         threshold: 0.9,                    // Higher threshold (requires more confident speech)
         prefix_padding_ms: 300,
-        silence_duration_ms: 800,        // Longer silence required (2.5s vs 1s)
+        silence_duration_ms: 800,        
         create_response: true,
         interrupt_response: true
       }
@@ -293,6 +293,9 @@ class RealtimeWebSocketService extends EventEmitter {
         input_audio_transcription: {
           model: 'whisper-1'
         },
+        input_audio_noise_reduction: {
+          type: 'near_field'  // Optimized for phone calls (close microphone)
+        },
         turn_detection: {
           type: 'server_vad',
           ...this.VAD_CONFIG.normal  // Use normal VAD config initially
@@ -304,6 +307,7 @@ class RealtimeWebSocketService extends EventEmitter {
     };
 
     console.log('⚙️ [RealtimeWS] Configuring session with', config.session.tools.length, 'tools');
+    console.log('🔇 [RealtimeWS] Noise reduction enabled: near_field (optimized for phone calls)');
     openaiWs.send(JSON.stringify(config));
   }
 
