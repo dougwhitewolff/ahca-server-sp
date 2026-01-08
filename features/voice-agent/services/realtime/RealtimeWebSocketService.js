@@ -154,6 +154,7 @@ class RealtimeWebSocketService extends EventEmitter {
         clientWs,
         openaiWs,
         twilioCallSid: metadata.twilioCallSid || null, // Store Twilio CallSid for bridge communication
+        baseUrl: metadata.baseUrl || null, // Store base URL for call forwarding
         isConnected: false,
         isResponding: false,  // Track if AI is currently responding
         activeResponseId: null,  // Track active response ID for cancellation
@@ -476,6 +477,62 @@ Do NOT use hardcoded company information from the prompt - always call this func
           type: 'function',
           name: 'end_conversation',
           description: '🚨 CRITICAL REQUIREMENTS BEFORE CALLING THIS FUNCTION:\n1. You MUST have collected ALL required information: name (confirmed), reason, and phone number\n2. You MUST have asked "Is there anything else I can help you with?" or similar\n3. The user MUST confirm they are done (e.g., says "no", "that\'s all", "nothing else", "I\'m good", "no thanks", etc.)\n\nABSOLUTE PROHIBITION: Do NOT call this function if:\n- Name is not collected or not confirmed\n- Reason is not collected\n- Phone number is not collected\n- The user just says "thanks" or "goodbye" without first asking if they need anything else\n\nIf this function returns an error about missing information, you MUST collect the missing information before attempting to end the conversation again.',
+          parameters: {
+            type: 'object',
+            properties: {}
+          }
+        }
+      ];
+    }
+
+    // Nourish Oregon has call routing and FAQ handling
+    if (businessId === 'nourish-oregon') {
+      console.log(`🔧 [RealtimeWS] Using Nourish Oregon tools (call routing + FAQ)`);
+      return [
+        {
+          type: 'function',
+          name: 'route_call',
+          description: `🚨 CRITICAL: Route the caller IMMEDIATELY when intent is detected. Do NOT ask clarifying questions.
+
+WHEN TO USE: As soon as caller mentions donations, deliveries, pickup, volunteering, etc.
+
+WORKFLOW:
+1. Caller says: "I have questions about food delivery"
+2. You say: "Let me connect you with Trina who can help you with that."
+3. You call: route_call({intent: "deliveries", reason: "questions about food delivery"})
+
+ROUTING RULES:
+- Donations → April
+- Deliveries → Trina  
+- Drive-up/Pickup → Dylan
+- Volunteering → April
+- Rental/Utility Assistance → Jordan
+- Doernbecher → Jordan
+- Partners → April
+- Betty Brown → April (screening)
+- Unknown/Unclear → April (default)
+
+🚨 DO NOT ask "Are you inquiring about timing, status, or something else?" - Just route immediately!`,
+          parameters: {
+            type: 'object',
+            properties: {
+              intent: {
+                type: 'string',
+                enum: ['donations', 'deliveries', 'pickup', 'volunteering', 'rental_assistance', 'doernbecher', 'partners', 'betty_brown', 'unknown'],
+                description: 'The caller intent category'
+              },
+              reason: {
+                type: 'string',
+                description: 'Brief description of what the caller needs'
+              }
+            },
+            required: ['intent', 'reason']
+          }
+        },
+        {
+          type: 'function',
+          name: 'end_conversation',
+          description: 'End the conversation. Only call this after the caller confirms they have nothing else or after voicemail is collected.',
           parameters: {
             type: 'object',
             properties: {}
@@ -937,6 +994,10 @@ Do NOT use hardcoded company information from the prompt - always call this func
 
         case 'get_company_info':
           result = await this.handleCompanyInfo(sessionId, args);
+          break;
+
+        case 'route_call':
+          result = await this.handleRouteCall(sessionData, args);
           break;
 
         case 'end_conversation':
@@ -1863,6 +1924,183 @@ Do NOT use hardcoded company information from the prompt - always call this func
 
     } catch (error) {
       console.error('❌ [RealtimeWS] Failed to auto-inject collection status:', error);
+    }
+  }
+
+  /**
+   * Handle call routing to staff members (Nourish Oregon)
+   */
+  async handleRouteCall(sessionData, args) {
+    try {
+      const { sessionId, twilioCallSid } = sessionData;
+      const { intent, reason } = args;
+      
+      console.log(`📞 [RouteCall] Routing call for intent: ${intent}, reason: ${reason}`);
+      
+      if (!twilioCallSid) {
+        console.error('❌ [RouteCall] No Twilio call SID available');
+        return {
+          success: false,
+          error: 'Cannot route call - not a phone call'
+        };
+      }
+
+      // Get business ID
+      const businessId = this.tenantContextManager?.getBusinessId(sessionId);
+      if (businessId !== 'nourish-oregon') {
+        return {
+          success: false,
+          error: 'Call routing only available for Nourish Oregon'
+        };
+      }
+
+      // Get business config for staff phone numbers
+      const businessConfig = this.businessConfigService?.getBusinessConfig(businessId);
+      if (!businessConfig) {
+        return {
+          success: false,
+          error: 'Business configuration not found'
+        };
+      }
+
+      // Map intent to staff member
+      const intentToStaff = {
+        donations: { name: 'April', phone: process.env.NOURISH_OREGON_APRIL_PHONE },
+        deliveries: { name: 'Trina', phone: process.env.NOURISH_OREGON_TRINA_PHONE },
+        pickup: { name: 'Dylan', phone: process.env.NOURISH_OREGON_DYLAN_PHONE },
+        volunteering: { name: 'April', phone: process.env.NOURISH_OREGON_APRIL_PHONE },
+        rental_assistance: { name: 'Jordan', phone: process.env.NOURISH_OREGON_JORDAN_PHONE },
+        doernbecher: { name: 'Jordan', phone: process.env.NOURISH_OREGON_JORDAN_PHONE },
+        partners: { name: 'April', phone: process.env.NOURISH_OREGON_APRIL_PHONE },
+        betty_brown: { name: 'April', phone: process.env.NOURISH_OREGON_APRIL_PHONE },
+        unknown: { name: 'April', phone: process.env.NOURISH_OREGON_APRIL_PHONE }
+      };
+
+      const staffInfo = intentToStaff[intent];
+      if (!staffInfo || !staffInfo.phone) {
+        console.error(`❌ [RouteCall] No staff member found for intent: ${intent}`);
+        return {
+          success: false,
+          error: `Unable to route call for intent: ${intent}`
+        };
+      }
+
+      console.log(`📞 [RouteCall] Routing to ${staffInfo.name} (${staffInfo.phone})`);
+
+      // Initialize call forwarding handler if not already done
+      if (!this.callForwardingHandler) {
+        const { CallForwardingHandler } = require('../integrations/CallForwardingHandler');
+        this.callForwardingHandler = new CallForwardingHandler();
+      }
+
+      // Get base URL from session (captured from request headers - always current ngrok URL)
+      // Prioritize sessionData.baseUrl since it reflects the actual incoming request URL
+      const baseUrl = sessionData.baseUrl || process.env.PUBLIC_BASE_URL || process.env.BASE_URL || process.env.NGROK_URL;
+
+      // CRITICAL: Mark call as redirecting BEFORE triggering Twilio REST API
+      // This prevents the bridge from hanging up when WebSocket closes during redirect
+      if (this.bridgeService) {
+        this.bridgeService.markCallAsRedirecting(twilioCallSid);
+      }
+
+      // Trigger call forward using Twilio REST API
+      const forwardSuccess = await this.callForwardingHandler.redirectCallToStaff(
+        twilioCallSid,
+        businessId,
+        staffInfo.phone,
+        staffInfo.name,
+        baseUrl
+      );
+
+      if (forwardSuccess) {
+        // Log the routing
+        this.callForwardingHandler.logCallForwarding(businessId, sessionId, staffInfo.name, intent);
+
+        return {
+          success: true,
+          message: `Transferring you to ${staffInfo.name} now. Please hold.`,
+          staffName: staffInfo.name,
+          intent: intent
+        };
+      } else {
+        return {
+          success: false,
+          error: 'Failed to forward call',
+          message: `I'm having trouble connecting you to ${staffInfo.name}. Please hold while I try again.`
+        };
+      }
+
+    } catch (error) {
+      console.error('❌ [RouteCall] Error:', error);
+      return {
+        success: false,
+        error: error.message,
+        message: 'I am having trouble routing your call. Please hold for a moment.'
+      };
+    }
+  }
+
+  /**
+   * Handle voicemail collection (Nourish Oregon)
+   */
+  async handleCollectVoicemail(sessionId, args) {
+    try {
+      const { name, phone, reason, intended_recipient } = args;
+      
+      console.log(`📞 [Voicemail] Collecting voicemail for ${name} (${phone}) - ${reason}`);
+      
+      // Get business ID
+      const businessId = this.tenantContextManager?.getBusinessId(sessionId);
+      if (businessId !== 'nourish-oregon') {
+        return {
+          success: false,
+          error: 'Voicemail collection only available for Nourish Oregon'
+        };
+      }
+
+      // Store voicemail info in session
+      this.stateManager.updateUserInfo(sessionId, {
+        name,
+        phone,
+        reason,
+        voicemail: true,
+        intendedRecipient: intended_recipient
+      });
+
+      // Send SMS notifications
+      if (this.smsService && this.smsService.isReady()) {
+        const aprilPhone = process.env.NOURISH_OREGON_APRIL_PHONE;
+        const messagingServiceSid = process.env.TWILIO_MESSAGING_SERVICE_SID;
+
+        const voicemailMessage = `Nourish Oregon Voicemail:\nFrom: ${name}\nPhone: ${phone}\nFor: ${intended_recipient}\nMessage: ${reason}`;
+
+        // Send to April
+        if (aprilPhone) {
+          await this.smsService.sendMessage(aprilPhone, voicemailMessage, messagingServiceSid);
+          console.log('✅ [Voicemail] SMS sent to April');
+        }
+
+        // Send to intended recipient if different
+        const staffPhoneEnvVar = `NOURISH_OREGON_${intended_recipient.toUpperCase()}_PHONE`;
+        const staffPhone = process.env[staffPhoneEnvVar];
+        if (staffPhone && staffPhone !== aprilPhone) {
+          await this.smsService.sendMessage(staffPhone, voicemailMessage, messagingServiceSid);
+          console.log(`✅ [Voicemail] SMS sent to ${intended_recipient}`);
+        }
+      }
+
+      return {
+        success: true,
+        message: `Thank you, ${name}. I have recorded your message for ${intended_recipient}. They will get back to you at ${phone}.`
+      };
+
+    } catch (error) {
+      console.error('❌ [Voicemail] Error:', error);
+      return {
+        success: false,
+        error: error.message,
+        message: 'I had trouble recording that. Could you please repeat your information?'
+      };
     }
   }
 

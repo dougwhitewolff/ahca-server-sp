@@ -5,8 +5,10 @@
 
 const { AppointmentFlowManager } = require('./AppointmentFlowManager');
 const { EmergencyCallHandler } = require('./EmergencyCallHandler');
+const { CallForwardingHandler } = require('./CallForwardingHandler');
 
 module.exports = {
   AppointmentFlowManager,
-  EmergencyCallHandler
+  EmergencyCallHandler,
+  CallForwardingHandler
 };
