@@ -44,15 +44,15 @@ class RealtimeWebSocketService extends EventEmitter {
         prefix_padding_ms: 300,
         silence_duration_ms: 600,
         create_response: true,
-        interrupt_response: true
+        interrupt_response: false
       },
       // Assistant-speaking VAD settings (more strict to prevent false barge-ins)
       assistantSpeaking: {
-        threshold: 0.9,                    // Higher threshold (requires more confident speech)
+        threshold: 1,                    // Higher threshold (requires more confident speech)
         prefix_padding_ms: 300,
         silence_duration_ms: 800,        
         create_response: true,
-        interrupt_response: true
+        interrupt_response: false
       }
     };
   }
@@ -159,6 +159,8 @@ class RealtimeWebSocketService extends EventEmitter {
         isResponding: false,  // Track if AI is currently responding
         activeResponseId: null,  // Track active response ID for cancellation
         suppressAudio: false, // Drop any in-flight audio after interruption until next response starts
+        discardingSpeech: false, // Track if we're discarding speech captured during agent response
+        speechDuringResponseTimestamp: null, // Timestamp when speech started during agent response
         createdAt: Date.now(),
         hasBufferedAudio: false,
         pendingClose: false // Track if session should be closed after current response completes
@@ -228,7 +230,7 @@ class RealtimeWebSocketService extends EventEmitter {
 
     // Average TTS speaking rate: ~150 characters per second
     // This accounts for pauses, punctuation, and natural speech patterns
-    const charactersPerSecond = 25;
+    const charactersPerSecond = 24;
     const baseDurationMs = (transcript.length / charactersPerSecond) * 1000;
     
     // Add buffer for network latency, audio processing, and playback delays
@@ -675,13 +677,29 @@ ROUTING RULES:
       }
     });
 
-    clientWs.on('close', () => {
-      console.log('🔌 [RealtimeWS] Client disconnected:', sessionId);
+    clientWs.on('close', (code, reason) => {
+      console.log('🔌 [RealtimeWS] Client disconnected:', sessionId, 'code:', code, 'reason:', reason?.toString());
+      // Log state at time of disconnect for debugging
+      if (sessionData) {
+        console.log('📊 [RealtimeWS] Session state at disconnect:', {
+          isResponding: sessionData.isResponding,
+          activeResponseId: sessionData.activeResponseId,
+          hasUnblockTimeout: !!sessionData.audioUnblockTimeout
+        });
+      }
       this.closeSession(sessionId);
     });
 
     clientWs.on('error', (error) => {
       console.error('❌ [RealtimeWS] Client WebSocket error:', sessionId, error);
+      // Log state at time of error for debugging
+      if (sessionData) {
+        console.log('📊 [RealtimeWS] Session state at error:', {
+          isResponding: sessionData.isResponding,
+          activeResponseId: sessionData.activeResponseId,
+          hasUnblockTimeout: !!sessionData.audioUnblockTimeout
+        });
+      }
     });
   }
 
@@ -693,17 +711,52 @@ ROUTING RULES:
 
     switch (message.type) {
       case 'audio':
-        // Forward audio to OpenAI
+        // Block audio input while agent is responding (uninterruptable mode)
+        // Only block if BOTH conditions are true (defensive check)
+        // Also ensure we're not blocking if state is inconsistent (safety fallback)
+        const shouldBlock = sessionData.isResponding === true && 
+                          sessionData.activeResponseId !== null && 
+                          sessionData.activeResponseId !== undefined;
+        
+        if (shouldBlock) {
+          // Silently drop audio - don't forward to OpenAI
+          // This prevents any transcription of speech during agent response
+          // Only log occasionally to avoid spam (every 100th packet or so)
+          if (Math.random() < 0.01) {
+            console.log('🔇 [RealtimeWS] Blocking audio input - agent is responding (isResponding:', sessionData.isResponding, 'activeResponseId:', sessionData.activeResponseId, ')');
+          }
+          return;
+        }
+        
+        // Safety: Log if we're in an unexpected state (for debugging)
+        if (sessionData.isResponding === true && sessionData.activeResponseId === null) {
+          if (Math.random() < 0.001) {
+            console.warn('⚠️ [RealtimeWS] Inconsistent state: isResponding=true but activeResponseId=null. Allowing audio anyway.');
+          }
+        }
+        
+        // Forward audio to OpenAI only when agent is not responding
         if (openaiWs.readyState === WebSocket.OPEN) {
           openaiWs.send(JSON.stringify({
             type: 'input_audio_buffer.append',
             audio: message.data
           }));
+        } else {
+          // Log if WebSocket is not open (shouldn't happen normally)
+          if (Math.random() < 0.001) {
+            console.warn('⚠️ [RealtimeWS] Cannot send audio - WebSocket not open. State:', openaiWs.readyState);
+          }
         }
         break;
 
       case 'input_audio_buffer.commit':
-        // Commit audio buffer
+        // Block commit while agent is responding
+        if (sessionData.isResponding && sessionData.activeResponseId) {
+          // Silently drop commit - prevents processing any buffered audio
+          return;
+        }
+        
+        // Commit audio buffer only when agent is not responding
         if (openaiWs.readyState === WebSocket.OPEN) {
           openaiWs.send(JSON.stringify({
             type: 'input_audio_buffer.commit'
@@ -750,33 +803,28 @@ ROUTING RULES:
           this.bridgeService.clearOutputBuffer(sessionData.twilioCallSid);
         }
 
-        // 2. Cancel any ongoing AI response (user is interrupting)
-        // Only send cancel if we have an active response (not just finished)
+        // 2. If agent is responding and uninterruptable, clear the input audio buffer
+        // This prevents queued speech from being processed after agent finishes
         if (sessionData.isResponding && sessionData.activeResponseId) {
-          console.log('🛑 [RealtimeWS] User interrupted - canceling AI response:', sessionData.activeResponseId);
-          
-          // Clear any pending VAD reversion timeout
-          if (sessionData.vadRevertTimeout) {
-            clearTimeout(sessionData.vadRevertTimeout);
-            sessionData.vadRevertTimeout = null;
-          }
+          console.log('🔇 [RealtimeWS] User spoke during agent response - clearing input buffer to prevent queued processing');
           
           try {
+            // Clear the input audio buffer so this speech won't be transcribed/processed
             sessionData.openaiWs.send(JSON.stringify({
-              type: 'response.cancel'
+              type: 'input_audio_buffer.clear'
             }));
-            sessionData.isResponding = false;
-            sessionData.activeResponseId = null;
-            // User interrupted - revert VAD config to normal immediately
-            await this.updateVADConfig(sessionData, 'normal');
+            
+            // Mark that we're discarding this speech and record timestamp
+            sessionData.discardingSpeech = true;
+            sessionData.speechDuringResponseTimestamp = Date.now();
+            console.log('⏰ [RealtimeWS] Recorded speech timestamp during response:', sessionData.speechDuringResponseTimestamp);
           } catch (error) {
-            console.log('⚠️ [RealtimeWS] Cancel failed (response may have completed):', error.message);
-            // Still reset state even if cancel failed
-            sessionData.isResponding = false;
-            sessionData.activeResponseId = null;
-            // Revert VAD config even if cancel failed
-            await this.updateVADConfig(sessionData, 'normal');
+            console.log('⚠️ [RealtimeWS] Failed to clear input buffer:', error.message);
           }
+        } else {
+          // Agent is not responding, so this is valid speech
+          sessionData.discardingSpeech = false;
+          sessionData.speechDuringResponseTimestamp = null;
         }
 
         // 3. Suppress any in-flight audio chunks arriving after interruption
@@ -789,6 +837,13 @@ ROUTING RULES:
 
       case 'input_audio_buffer.speech_stopped':
         console.log('🔇 [RealtimeWS] Speech stopped:', sessionId);
+        
+        // Don't reset discardingSpeech here - wait for transcription to arrive
+        // The flag will be reset when transcription is processed or when new response starts
+        if (sessionData.discardingSpeech) {
+          console.log('⏳ [RealtimeWS] Speech stopped during agent response - will discard transcription when it arrives');
+        }
+        
         this.sendToClient(sessionData, {
           type: 'speech_stopped'
         });
@@ -796,6 +851,23 @@ ROUTING RULES:
 
       case 'conversation.item.input_audio_transcription.completed':
         console.log('📝 [RealtimeWS] Transcription:', event.transcript);
+        
+        // Check if this transcription should be discarded
+        // Either: flag is set, OR transcription arrived within 3 seconds of speech during response
+        const shouldDiscard = sessionData.discardingSpeech || 
+          (sessionData.speechDuringResponseTimestamp && 
+           Date.now() - sessionData.speechDuringResponseTimestamp < 3000 &&
+           !sessionData.isResponding);
+        
+        if (shouldDiscard) {
+          console.log('🗑️ [RealtimeWS] Discarding transcription captured during agent response:', event.transcript);
+          console.log('   Flag:', sessionData.discardingSpeech, 'Timestamp:', sessionData.speechDuringResponseTimestamp, 'Time since:', sessionData.speechDuringResponseTimestamp ? Date.now() - sessionData.speechDuringResponseTimestamp : 'N/A');
+          sessionData.discardingSpeech = false;
+          sessionData.speechDuringResponseTimestamp = null;
+          // Don't add to conversation history, don't trigger response
+          break;
+        }
+        
         this.sendToClient(sessionData, {
           type: 'transcript',
           text: event.transcript,
@@ -851,6 +923,18 @@ ROUTING RULES:
           sessionData.suppressAudio = false;
           // Assistant is starting to speak - update VAD config to be more strict
           await this.updateVADConfig(sessionData, 'assistantSpeaking');
+          // Reset discarding flag when new response starts (any pending speech from previous response is now stale)
+          if (sessionData.discardingSpeech || sessionData.speechDuringResponseTimestamp) {
+            console.log('🔄 [RealtimeWS] New response starting - clearing discarding flag and timestamp');
+            sessionData.discardingSpeech = false;
+            sessionData.speechDuringResponseTimestamp = null;
+          }
+          // Clear any pending audio unblock timeout from previous response
+          if (sessionData.audioUnblockTimeout) {
+            clearTimeout(sessionData.audioUnblockTimeout);
+            sessionData.audioUnblockTimeout = null;
+            console.log('🔄 [RealtimeWS] Cleared pending audio unblock timeout - new response starting');
+          }
         }
         sessionData.isResponding = true;  // Track that AI is responding
         sessionData.activeResponseId = event.response_id || 'active';  // Track active response
@@ -896,10 +980,7 @@ ROUTING RULES:
         break;
 
       case 'response.done':
-        console.log('✅ [RealtimeWS] Response completed');
-        sessionData.isResponding = false;  // AI finished responding
-        sessionData.activeResponseId = null;  // Clear active response ID
-        sessionData.suppressAudio = false; // Clear suppression at end of response
+        console.log('✅ [RealtimeWS] Response generation completed (audio still playing)');
         
         // Calculate estimated audio playback duration based on transcript length
         const transcript = sessionData.currentResponseTranscript || '';
@@ -907,12 +988,65 @@ ROUTING RULES:
         
         console.log(`⏱️ [RealtimeWS] Estimated audio duration: ${estimatedDurationMs}ms for transcript (${transcript.length} chars)`);
         
-        // Schedule VAD config reversion after audio finishes playing
+        // CRITICAL: Keep isResponding=true until audio finishes playing
+        // Don't re-enable audio input yet - wait for playback to complete
+        // We'll set isResponding=false after the estimated duration
+        
+        // Schedule VAD config reversion AND audio input re-enable after audio finishes playing
         // Clear any existing timeout first
         if (sessionData.vadRevertTimeout) {
           clearTimeout(sessionData.vadRevertTimeout);
         }
         
+        if (sessionData.audioUnblockTimeout) {
+          clearTimeout(sessionData.audioUnblockTimeout);
+        }
+        
+        // Schedule audio input re-enable after playback finishes
+        // Add safety margin (500ms) to ensure audio has finished playing
+        const safetyMarginMs = 500;
+        const totalWaitTime = estimatedDurationMs + safetyMarginMs;
+        
+        sessionData.audioUnblockTimeout = setTimeout(() => {
+          try {
+            // Double-check session still exists (might have been closed)
+            if (!this.sessions.has(sessionId)) {
+              console.log('⚠️ [RealtimeWS] Session no longer exists, skipping audio unblock');
+              return;
+            }
+            
+            console.log('🔊 [RealtimeWS] Audio playback finished - re-enabling audio input');
+            sessionData.isResponding = false;  // AI finished speaking (audio playback complete)
+            sessionData.activeResponseId = null;  // Clear active response ID
+            sessionData.suppressAudio = false; // Clear suppression at end of response
+            sessionData.audioUnblockTimeout = null;
+            console.log('🔊 [RealtimeWS] Audio input now enabled. isResponding:', sessionData.isResponding, 'activeResponseId:', sessionData.activeResponseId);
+          } catch (error) {
+            console.error('❌ [RealtimeWS] Error in audio unblock timeout:', error);
+            // Safety: Force unblock even if there's an error
+            if (sessionData) {
+              sessionData.isResponding = false;
+              sessionData.activeResponseId = null;
+              sessionData.audioUnblockTimeout = null;
+            }
+          }
+        }, totalWaitTime);
+        
+        // Safety: Also set a maximum timeout (30 seconds) to ensure audio is always unblocked
+        // This prevents audio from being blocked forever if something goes wrong
+        if (sessionData.audioUnblockSafetyTimeout) {
+          clearTimeout(sessionData.audioUnblockSafetyTimeout);
+        }
+        sessionData.audioUnblockSafetyTimeout = setTimeout(() => {
+          if (sessionData && sessionData.isResponding) {
+            console.warn('⚠️ [RealtimeWS] Safety timeout: Force unblocking audio after 30 seconds');
+            sessionData.isResponding = false;
+            sessionData.activeResponseId = null;
+            sessionData.audioUnblockSafetyTimeout = null;
+          }
+        }, 30000); // 30 second maximum
+        
+        // Schedule VAD config reversion after audio finishes playing
         sessionData.vadRevertTimeout = setTimeout(async () => {
           console.log('🔄 [RealtimeWS] Reverting VAD config to normal after audio playback');
           await this.updateVADConfig(sessionData, 'normal');
@@ -2199,6 +2333,20 @@ ROUTING RULES:
 
     if (sessionData) {
       console.log('🗑️ [RealtimeWS] Closing session:', sessionId);
+
+      // Clean up any pending timeouts
+      if (sessionData.vadRevertTimeout) {
+        clearTimeout(sessionData.vadRevertTimeout);
+        sessionData.vadRevertTimeout = null;
+      }
+      if (sessionData.audioUnblockTimeout) {
+        clearTimeout(sessionData.audioUnblockTimeout);
+        sessionData.audioUnblockTimeout = null;
+      }
+      if (sessionData.audioUnblockSafetyTimeout) {
+        clearTimeout(sessionData.audioUnblockSafetyTimeout);
+        sessionData.audioUnblockSafetyTimeout = null;
+      }
 
       // If this is a Twilio call, hang up the call legs
       if (sessionData.twilioCallSid && this.bridgeService) {
