@@ -165,14 +165,32 @@ router.post('/voice/transfer-staff', async (req, res) => {
 
     console.log(`📞 [TwilioVoice] Using Caller ID for transfer: ${callerId}`);
 
-    // Create TwiML to transfer the call (SIMPLE - like emergency transfer)
+    // Determine the base URL for callback
+    const forwardedHost = req.headers['x-forwarded-host'];
+    const rawHost = (forwardedHost ? forwardedHost.split(',')[0] : req.get('host')) || '';
+    const host = rawHost.replace(/^https?:\/\//, '').replace(/\/$/, '');
+    const protoHeader = (req.headers['x-forwarded-proto'] || req.protocol || '').toString();
+    const proto = protoHeader.split(',')[0].trim().toLowerCase();
+    const baseUrl = `${proto}://${host}`;
+
+    // Create callback URL for dial status
+    const callbackUrl = `${baseUrl}/twilio/voice/transfer-callback?` +
+      `businessId=${encodeURIComponent(businessId)}&` +
+      `staffName=${encodeURIComponent(staffName)}`;
+
+    console.log(`🔗 [TwilioVoice] Using callback URL: ${callbackUrl}`);
+
+    // Create TwiML to transfer the call
     const twiml = new twilio.twiml.VoiceResponse();
-    twiml.say(`Connecting you with ${staffName} now. Please hold.`);
+    // Removed the "Connecting you with..." message - AI already said it
     twiml.dial({
-      callerId: callerId
+      callerId: callerId,
+      timeout: 30,
+      action: callbackUrl,
+      method: 'POST'
     }, staffPhone);
     
-    // If dial fails, provide fallback
+    // If dial fails immediately, provide fallback
     twiml.say(`Sorry, we were unable to connect you to ${staffName}. Please hang up and call back.`);
     twiml.hangup();
     

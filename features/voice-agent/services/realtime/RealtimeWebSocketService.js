@@ -2227,6 +2227,120 @@ ROUTING RULES:
         }
       }
 
+      // Send email notification (same as Superior Fencing implementation)
+      try {
+        if (this.businessConfigService) {
+          const businessConfig = this.businessConfigService.getBusinessConfig(businessId);
+          
+          if (businessConfig && businessConfig.email) {
+            const { EmailService } = require('../../../../shared/services/EmailService');
+            const emailService = EmailService.createForBusiness(businessConfig.email);
+            
+            // Get notification recipients from config
+            const notificationRecipients = businessConfig.email.notificationRecipients || [];
+            
+            if (notificationRecipients.length > 0) {
+              console.log('📧 [Voicemail] Sending email notification to:', notificationRecipients);
+              
+              // Create HTML email content
+              const htmlContent = `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Voicemail - Nourish Oregon</title>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background-color: #2c5530; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
+        .content { background-color: #f9f9f9; padding: 20px; border-radius: 0 0 8px 8px; }
+        .voicemail-section { background-color: #fff; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #2c5530; }
+        .detail-row { margin: 10px 0; }
+        .label { font-weight: bold; color: #2c5530; }
+        .footer { text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; color: #666; font-size: 14px; }
+        .logo { font-size: 24px; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="logo">🍎 Nourish Oregon</div>
+        <p>New Voicemail Message</p>
+    </div>
+    
+    <div class="content">
+        <h2>Voicemail from ${name}</h2>
+        
+        <p>${name} called and left a message. Please return their call as soon as possible.</p>
+        
+        <div class="voicemail-section">
+            <div class="detail-row">
+                <span class="label">From:</span> ${name}
+            </div>
+            <div class="detail-row">
+                <span class="label">Phone:</span> <a href="tel:${phone}">${phone}</a>
+            </div>
+            <div class="detail-row">
+                <span class="label">For:</span> ${intended_recipient}
+            </div>
+            <div class="detail-row">
+                <span class="label">Message:</span><br>
+                ${reason}
+            </div>
+        </div>
+        
+        <p><strong>Action Required:</strong> Please call ${name} back at ${phone} to address their inquiry.</p>
+    </div>
+    
+    <div class="footer">
+        <p>This email was sent from Nourish Oregon's Voice Assistant.<br>
+        If you have any concerns about this email, please contact your system administrator.</p>
+    </div>
+</body>
+</html>
+              `.trim();
+
+              const textContent = `
+Nourish Oregon - New Voicemail Message
+
+From: ${name}
+Phone: ${phone}
+For: ${intended_recipient}
+Message: ${reason}
+
+Please call ${name} back at ${phone} to address their inquiry.
+              `.trim();
+
+              // Send to each notification recipient
+              for (const recipientEmail of notificationRecipients) {
+                const userInfo = {
+                  name: name,
+                  email: recipientEmail
+                };
+                
+                const emailResult = await emailService.sendViaMicrosoftGraph(
+                  userInfo,
+                  htmlContent,
+                  textContent,
+                  `Voicemail from ${name} - Nourish Oregon`
+                );
+                
+                if (emailResult.success) {
+                  console.log(`✅ [Voicemail] Email sent to ${recipientEmail}`);
+                } else {
+                  console.error(`❌ [Voicemail] Failed to send email to ${recipientEmail}:`, emailResult.error);
+                }
+              }
+            } else {
+              console.log('⚠️ [Voicemail] No notification recipients configured for email');
+            }
+          } else {
+            console.log('⚠️ [Voicemail] No email config found for business');
+          }
+        }
+      } catch (emailError) {
+        console.error('❌ [Voicemail] Error sending email notification:', emailError);
+        // Don't fail the whole voicemail process if email fails
+      }
+
       return {
         success: true,
         message: `Thank you, ${name}. I have recorded your message for ${intended_recipient}. They will get back to you at ${phone}.`
