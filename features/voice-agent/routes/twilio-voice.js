@@ -227,12 +227,13 @@ router.post('/voice/transfer-callback', async (req, res) => {
       twiml.hangup();
     } else {
       // No answer, busy, or failed - return to agent for voicemail
-      twiml.say(`It looks like ${staffName} isn't available right now. Let me take a message for you.`);
+      // Don't say anything here - let Jacob handle the voicemail message when he comes back
+      // This prevents the redundant "It looks like..." message from Twilio voice
       // Reconnect to media stream for voicemail collection
-      // The WebSocket connection should still be active to collect voicemail
+      // IMPORTANT: Pass staffName so Jacob can say the correct name in voicemail message
       twiml.redirect({
         method: 'POST'
-      }, `/twilio/voice/return-to-agent?businessId=${businessId}`);
+      }, `/twilio/voice/return-to-agent?businessId=${businessId}&staffName=${encodeURIComponent(staffName)}`);
     }
     
     res.type('text/xml');
@@ -255,8 +256,9 @@ router.post('/voice/transfer-callback', async (req, res) => {
 router.post('/voice/return-to-agent', async (req, res) => {
   try {
     const businessId = req.query.businessId;
+    const staffName = req.query.staffName || 'that person';
     
-    console.log(`📞 [TwilioVoice] Returning to agent for business: ${businessId}`);
+    console.log(`📞 [TwilioVoice] Returning to agent for business: ${businessId}, staff: ${staffName}`);
     
     // Initialize business config service if needed
     if (!businessConfigService.isInitialized()) {
@@ -279,9 +281,10 @@ router.post('/voice/return-to-agent', async (req, res) => {
     const connect = twiml.connect();
     const stream = connect.stream({ url: streamUrl });
     
-    // Pass business context and indicate this is a return from transfer
+    // Pass business context, indicate this is a return from transfer, and pass staff name
     stream.parameter({ name: 'businessId', value: businessId });
     stream.parameter({ name: 'returnFromTransfer', value: 'true' });
+    stream.parameter({ name: 'staffName', value: staffName });
     
     res.type('text/xml');
     return res.send(twiml.toString());

@@ -50,6 +50,8 @@ function setupTwilioMediaWebSocket(wss) {
           streamSid = msg.start?.streamSid;
           callSid = msg.start?.callSid || callSid || `call-${Date.now()}`;
           // Extract custom parameters sent via TwiML <Parameter>
+          let returnFromTransfer = false;
+          let staffName = null;
           try {
             const cp = msg.start?.customParameters;
             if (cp && typeof cp === 'object' && !Array.isArray(cp)) {
@@ -57,16 +59,20 @@ function setupTwilioMediaWebSocket(wss) {
               businessId = cp.businessId || businessId;
               from = cp.from || from;
               to = cp.to || to;
+              returnFromTransfer = cp.returnFromTransfer === 'true' || cp.returnFromTransfer === true;
+              staffName = cp.staffName || null;
             } else if (Array.isArray(cp)) {
               // Fallback: array of { name, value }
               const map = new Map(cp.map(p => [p.name, p.value]));
               businessId = map.get('businessId') || businessId;
               from = map.get('from') || from;
               to = map.get('to') || to;
+              returnFromTransfer = map.get('returnFromTransfer') === 'true' || map.get('returnFromTransfer') === true;
+              staffName = map.get('staffName') || null;
             }
           } catch (_) {}
 
-          console.log('🎬 [TwilioWS] start event', { callSid, streamSid, businessId, from, to });
+          console.log('🎬 [TwilioWS] start event', { callSid, streamSid, businessId, from, to, returnFromTransfer, staffName });
 
           // Validate business ID received via start.customParameters
           if (!businessId) {
@@ -79,7 +85,7 @@ function setupTwilioMediaWebSocket(wss) {
           tenantContextManager.setTenantContext(callSid, businessId);
           console.log(`🏢 [TwilioWS] Set tenant context: ${callSid} -> ${businessId}`);
 
-          await bridge.start(callSid, ws, streamSid, businessId, from, to, baseUrl);
+          await bridge.start(callSid, ws, streamSid, businessId, from, to, baseUrl, returnFromTransfer, staffName);
           break;
         case 'media':
           // media payload size can be logged if needed
