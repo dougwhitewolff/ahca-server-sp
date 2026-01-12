@@ -155,6 +155,8 @@ class RealtimeWebSocketService extends EventEmitter {
         openaiWs,
         twilioCallSid: metadata.twilioCallSid || null, // Store Twilio CallSid for bridge communication
         baseUrl: metadata.baseUrl || null, // Store base URL for call forwarding
+        returnFromTransfer: metadata.returnFromTransfer || false, // Track if returning from failed transfer
+        staffName: metadata.staffName || null, // Store staff name for voicemail message
         isConnected: false,
         isResponding: false,  // Track if AI is currently responding
         activeResponseId: null,  // Track active response ID for cancellation
@@ -180,8 +182,15 @@ class RealtimeWebSocketService extends EventEmitter {
       // Configure session with function tools
       await this.configureSession(sessionData);
 
-      // Trigger automatic initial greeting
-      await this.triggerInitialGreeting(sessionData);
+      // Trigger appropriate greeting based on context
+      if (metadata.returnFromTransfer) {
+        // Returning from failed transfer - trigger voicemail collection instead of greeting
+        console.log('🔄 [RealtimeWS] Returning from failed transfer - triggering voicemail message');
+        await this.triggerVoicemailMessage(sessionData);
+      } else {
+        // Normal call - trigger initial greeting
+        await this.triggerInitialGreeting(sessionData);
+      }
 
       console.log('✅ [RealtimeWS] Session created successfully:', sessionId);
 
@@ -352,6 +361,96 @@ class RealtimeWebSocketService extends EventEmitter {
 
     openaiWs.send(JSON.stringify(initialResponse));
     console.log('✅ [RealtimeWS] Initial greeting triggered');
+  }
+
+  /**
+   * Trigger voicemail collection message (when returning from failed transfer)
+   */
+  async triggerVoicemailMessage(sessionData) {
+    const { openaiWs, sessionId, staffName: passedStaffName } = sessionData;
+
+    console.log('📞 [RealtimeWS] Triggering voicemail collection message');
+
+    // Add a small delay to ensure session configuration is processed
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // Get business ID and use the staff name passed from the transfer
+    let businessId = null;
+    let staffName = passedStaffName || 'that person';
+    
+    try {
+      if (this.tenantContextManager) {
+        businessId = this.tenantContextManager.getBusinessId(sessionId);
+      }
+      
+      // Fallback: If no staff name was passed, try to get from config (shouldn't happen)
+      if (!staffName || staffName === 'that person') {
+        const businessConfig = this.businessConfigService?.getBusinessConfig(businessId);
+        if (businessConfig && businessConfig.businessId === 'nourish-oregon') {
+          staffName = businessConfig.callRouting?.staff ? Object.values(businessConfig.callRouting.staff)[0]?.name : 'that person';
+        }
+      }
+    } catch (e) {
+      console.warn('⚠️ [RealtimeWS] Could not determine staff name for voicemail:', e.message);
+    }
+
+    console.log(`📞 [RealtimeWS] Using staff name for voicemail: ${staffName}`);
+
+    // Add a conversation item indicating the transfer failed with EXPLICIT instructions
+    const transferFailedMessage = {
+      type: 'conversation.item.create',
+      item: {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: `[SYSTEM: ${staffName} did not answer. You MUST collect voicemail.
+
+🔴 MANDATORY PROTOCOL - NO EXCEPTIONS:
+
+1. Say: "It looks like ${staffName} isn't available right now. Can I get your name and number so they can call you back?"
+
+2. The user will give you information. Extract:
+   - name (e.g., "John Smith", "Ryan", "Seneca")
+   - phone (e.g., "555-1234", "five five five one two three four")
+   - reason (e.g., "donations", "food delivery", "questions")
+
+3. 🚨 THE MOMENT you have extracted name, phone, and reason (even if incomplete or unclear), you MUST IMMEDIATELY call this function:
+
+   collect_voicemail({
+     "name": "their_name",
+     "phone": "their_phone",
+     "reason": "their_reason",
+     "intended_recipient": "${staffName}"
+   })
+
+4. DO NOT ask clarifying questions after you have something for all three fields.
+5. DO NOT continue the conversation - CALL THE FUNCTION IMMEDIATELY.
+6. Even if the info is partial or you're unsure, CALL THE FUNCTION ANYWAY.
+
+❌ WRONG: "Could I have your full name, please?" (asking again)
+❌ WRONG: "Let me make sure I have that right..." (confirming)
+✅ RIGHT: Immediately call collect_voicemail function with the data you have
+
+YOUR ONLY JOB: Get name, phone, reason → CALL FUNCTION. Nothing else!]`
+          }
+        ]
+      }
+    };
+
+    openaiWs.send(JSON.stringify(transferFailedMessage));
+
+    // Trigger a response to make the AI say the voicemail message
+    const voicemailResponse = {
+      type: 'response.create',
+      response: {
+        modalities: ['audio', 'text']
+      }
+    };
+
+    openaiWs.send(JSON.stringify(voicemailResponse));
+    console.log('✅ [RealtimeWS] Voicemail collection message triggered');
   }
 
   /**
@@ -533,6 +632,50 @@ ROUTING RULES:
               }
             },
             required: ['intent', 'reason']
+          }
+        },
+        {
+          type: 'function',
+          name: 'collect_voicemail',
+          description: `Collect voicemail information when a staff member is unavailable.
+
+WHEN TO USE: After a transfer attempt fails and the staff member doesn't answer.
+
+REQUIRED INFORMATION TO COLLECT:
+- name: Caller's full name
+- phone: Caller's phone number (10 digits)
+- reason: Brief reason for their call
+- intended_recipient: The staff member's name (April, Trina, Dylan, Jordan, Betty)
+
+WORKFLOW:
+1. Say: "It looks like {StaffName} isn't available right now. Can I get your name and number so they can call you back?"
+2. Collect name, phone number, and confirm the reason
+3. Call this function with all four parameters
+4. After successful collection, say goodbye and call end_conversation
+
+IMPORTANT: This sends SMS + Email notifications to April and the intended staff member.`,
+          parameters: {
+            type: 'object',
+            properties: {
+              name: {
+                type: 'string',
+                description: 'Caller full name'
+              },
+              phone: {
+                type: 'string',
+                description: 'Caller phone number'
+              },
+              reason: {
+                type: 'string',
+                description: 'Brief reason for the call'
+              },
+              intended_recipient: {
+                type: 'string',
+                enum: ['April', 'Trina', 'Dylan', 'Jordan', 'Betty'],
+                description: 'The staff member they were trying to reach'
+              }
+            },
+            required: ['name', 'phone', 'reason', 'intended_recipient']
           }
         },
         {
@@ -1136,6 +1279,10 @@ ROUTING RULES:
 
         case 'route_call':
           result = await this.handleRouteCall(sessionData, args);
+          break;
+
+        case 'collect_voicemail':
+          result = await this.handleCollectVoicemail(sessionId, args);
           break;
 
         case 'end_conversation':
@@ -2141,6 +2288,11 @@ ROUTING RULES:
         this.bridgeService.markCallAsRedirecting(twilioCallSid);
       }
 
+      // Add delay before actual call transfer to allow Jacob's message to play completely
+      // Message: "Let me connect you with [Name] who can help you with that" (~3-4 seconds)
+      console.log('⏰ [RouteCall] Waiting 3.5 seconds for transfer message to complete...');
+      await new Promise(resolve => setTimeout(resolve, 3500));
+
       // Trigger call forward using Twilio REST API
       const forwardSuccess = await this.callForwardingHandler.redirectCallToStaff(
         twilioCallSid,
@@ -2201,6 +2353,7 @@ ROUTING RULES:
         name,
         phone,
         reason,
+        collected: true,  // Mark as collected so end_conversation works properly
         voicemail: true,
         intendedRecipient: intended_recipient
       });
@@ -2226,6 +2379,132 @@ ROUTING RULES:
           console.log(`✅ [Voicemail] SMS sent to ${intended_recipient}`);
         }
       }
+
+      // Send email notification (same as Superior Fencing implementation)
+      try {
+        if (this.businessConfigService) {
+          const businessConfig = this.businessConfigService.getBusinessConfig(businessId);
+          
+          if (businessConfig && businessConfig.email) {
+            const { EmailService } = require('../../../../shared/services/EmailService');
+            const emailService = EmailService.createForBusiness(businessConfig.email);
+            
+            // Get notification recipients from config
+            const notificationRecipients = businessConfig.email.notificationRecipients || [];
+            
+            if (notificationRecipients.length > 0) {
+              console.log('📧 [Voicemail] Sending email notification to:', notificationRecipients);
+              
+              // Create HTML email content
+              const htmlContent = `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Voicemail - Nourish Oregon</title>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background-color: #2c5530; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
+        .content { background-color: #f9f9f9; padding: 20px; border-radius: 0 0 8px 8px; }
+        .voicemail-section { background-color: #fff; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #2c5530; }
+        .detail-row { margin: 10px 0; }
+        .label { font-weight: bold; color: #2c5530; }
+        .footer { text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; color: #666; font-size: 14px; }
+        .logo { font-size: 24px; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="logo">🍎 Nourish Oregon</div>
+        <p>New Voicemail Message</p>
+    </div>
+    
+    <div class="content">
+        <h2>Voicemail from ${name}</h2>
+        
+        <p>${name} called and left a message. Please return their call as soon as possible.</p>
+        
+        <div class="voicemail-section">
+            <div class="detail-row">
+                <span class="label">From:</span> ${name}
+            </div>
+            <div class="detail-row">
+                <span class="label">Phone:</span> <a href="tel:${phone}">${phone}</a>
+            </div>
+            <div class="detail-row">
+                <span class="label">For:</span> ${intended_recipient}
+            </div>
+            <div class="detail-row">
+                <span class="label">Message:</span><br>
+                ${reason}
+            </div>
+        </div>
+        
+        <p><strong>Action Required:</strong> Please call ${name} back at ${phone} to address their inquiry.</p>
+    </div>
+    
+    <div class="footer">
+        <p>This email was sent from Nourish Oregon's Voice Assistant.<br>
+        If you have any concerns about this email, please contact your system administrator.</p>
+    </div>
+</body>
+</html>
+              `.trim();
+
+              const textContent = `
+Nourish Oregon - New Voicemail Message
+
+From: ${name}
+Phone: ${phone}
+For: ${intended_recipient}
+Message: ${reason}
+
+Please call ${name} back at ${phone} to address their inquiry.
+              `.trim();
+
+              // Send to each notification recipient
+              for (const recipientEmail of notificationRecipients) {
+                const userInfo = {
+                  name: name,
+                  email: recipientEmail
+                };
+                
+                const emailResult = await emailService.sendViaMicrosoftGraph(
+                  userInfo,
+                  htmlContent,
+                  textContent,
+                  `Voicemail from ${name} - Nourish Oregon`
+                );
+                
+                if (emailResult.success) {
+                  console.log(`✅ [Voicemail] Email sent to ${recipientEmail}`);
+                } else {
+                  console.error(`❌ [Voicemail] Failed to send email to ${recipientEmail}:`, emailResult.error);
+                }
+              }
+            } else {
+              console.log('⚠️ [Voicemail] No notification recipients configured for email');
+            }
+          } else {
+            console.log('⚠️ [Voicemail] No email config found for business');
+          }
+        }
+      } catch (emailError) {
+        console.error('❌ [Voicemail] Error sending email notification:', emailError);
+        // Don't fail the whole voicemail process if email fails
+      }
+
+      // Auto-hangup after voicemail collection (Nourish Oregon only)
+      // Wait 8 seconds to allow Jacob's goodbye message to play before ending the call
+      // Note: We directly close the session instead of calling handleEndConversation
+      // because Jacob already said goodbye in the voicemail message above
+      console.log('⏰ [Voicemail] Scheduling auto-hangup in 8 seconds...');
+      setTimeout(() => {
+        console.log('📞 [Voicemail] Auto-hangup triggered - closing session directly');
+        this.closeSession(sessionId).catch(err => {
+          console.error('❌ [Voicemail] Auto-hangup failed:', err);
+        });
+      }, 8000);
 
       return {
         success: true,
@@ -2262,9 +2541,21 @@ ROUTING RULES:
       const userInfo = session?.userInfo || {};
 
       // CRITICAL: Check if all required information is collected before allowing call to end
-      const hasName = userInfo.name && userInfo.nameConfirmed;
-      const hasReason = userInfo.reason && userInfo.reason.trim() !== '';
-      const hasPhone = userInfo.phone && userInfo.phone !== 'client:Anonymous' && userInfo.phone.trim() !== '' && userInfo.phoneConfirmed;
+      // For voicemail sessions, skip confirmation checks (calling collect_voicemail IS the confirmation)
+      let hasName, hasReason, hasPhone;
+      
+      if (userInfo.voicemail) {
+        // Voicemail session - just check that data exists
+        hasName = userInfo.name && userInfo.name.trim() !== '';
+        hasReason = userInfo.reason && userInfo.reason.trim() !== '';
+        hasPhone = userInfo.phone && userInfo.phone !== 'client:Anonymous' && userInfo.phone.trim() !== '';
+        console.log('📧 [EndConversation] Voicemail session - using simplified validation');
+      } else {
+        // Regular session - check confirmation flags
+        hasName = userInfo.name && userInfo.nameConfirmed;
+        hasReason = userInfo.reason && userInfo.reason.trim() !== '';
+        hasPhone = userInfo.phone && userInfo.phone !== 'client:Anonymous' && userInfo.phone.trim() !== '' && userInfo.phoneConfirmed;
+      }
 
       const missingInfo = [];
       if (!hasName) missingInfo.push('name');

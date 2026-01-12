@@ -32,7 +32,7 @@
     "senderEmail": "${BUSINESS_SHERPAPROMPT_SENDER_EMAIL}",
     "fromEmail": "noreply@4trades.ai",
     "fromName": "Nourish Oregon",
-    "notificationRecipients": ["april@nourishoregon.com"]
+    "notificationRecipients": ["doug@4trades.ai"]
   },
   
   "sms": {

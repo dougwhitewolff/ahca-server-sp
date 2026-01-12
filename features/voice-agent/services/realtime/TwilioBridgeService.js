@@ -33,7 +33,7 @@ class TwilioBridgeService {
     }
   }
 
-  async start(callSid, twilioWs, streamSid, businessId, fromPhone = null, toPhone = null, baseUrl = null) {
+  async start(callSid, twilioWs, streamSid, businessId, fromPhone = null, toPhone = null, baseUrl = null, returnFromTransfer = false, staffName = null) {
     const sessionId = `twilio-${callSid}`;
 
     // Ensure the Realtime service sees the correct tenant for this exact session
@@ -63,7 +63,7 @@ class TwilioBridgeService {
     await this.realtimeWSService.createSession(
       mockWs,
       `twilio-${callSid}`,
-      { twilioCallSid: callSid, baseUrl: baseUrl }
+      { twilioCallSid: callSid, baseUrl: baseUrl, returnFromTransfer: returnFromTransfer, staffName: staffName }
     );
 
     // Persist caller/callee phone numbers into session user info for later SMS
