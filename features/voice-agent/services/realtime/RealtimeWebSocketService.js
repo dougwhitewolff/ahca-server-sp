@@ -6,9 +6,10 @@
 
 const WebSocket = require('ws');
 const EventEmitter = require('events');
+const { CobraVADService } = require('./CobraVADService');
 
 class RealtimeWebSocketService extends EventEmitter {
-  constructor(conversationFlowHandler, openAIService, stateManager, businessConfigService = null, tenantContextManager = null, smsService = null) {
+  constructor(conversationFlowHandler, openAIService, stateManager, businessConfigService = null, tenantContextManager = null, smsService = null, cobraVADService = null) {
     super();
     this.apiKey = process.env.OPENAI_API_KEY_CALL_AGENT;
 
@@ -24,6 +25,9 @@ class RealtimeWebSocketService extends EventEmitter {
     this.tenantContextManager = tenantContextManager;
     this.smsService = smsService;
     this.bridgeService = null; // To be injected post-instantiation
+    
+    // Initialize Cobra VAD service (create if not provided)
+    this.cobraVAD = cobraVADService || new CobraVADService();
 
     // Active sessions: sessionId -> { clientWs, openaiWs, state }
     this.sessions = new Map();
@@ -181,6 +185,12 @@ class RealtimeWebSocketService extends EventEmitter {
 
       // Configure session with function tools
       await this.configureSession(sessionData);
+
+      // Initialize Cobra VAD for this session (web clients use 24kHz)
+      // Skip for Twilio calls (they use TwilioBridgeService)
+      if (!metadata.twilioCallSid) {
+        await this.cobraVAD.initializeSession(sessionId, 24000);
+      }
 
       // Trigger appropriate greeting based on context
       if (metadata.returnFromTransfer) {
@@ -875,6 +885,28 @@ IMPORTANT: This sends SMS + Email notifications to April and the intended staff 
         if (sessionData.isResponding === true && sessionData.activeResponseId === null) {
           if (Math.random() < 0.001) {
             console.warn('⚠️ [RealtimeWS] Inconsistent state: isResponding=true but activeResponseId=null. Allowing audio anyway.');
+          }
+        }
+        
+        // Apply Cobra VAD to filter audio (only for web clients, not Twilio)
+        // Twilio calls are handled by TwilioBridgeService
+        if (!sessionData.twilioCallSid) {
+          try {
+            // Decode base64 audio to PCM16
+            const audioBuffer = Buffer.from(message.data, 'base64');
+            const pcm16 = new Int16Array(audioBuffer.buffer, audioBuffer.byteOffset, audioBuffer.length / 2);
+            
+            // Process through Cobra VAD (web clients use 24kHz)
+            const vadResult = await this.cobraVAD.processAudio(sessionId, pcm16, 24000);
+            
+            // Only forward audio if voice is detected
+            if (!vadResult.hasVoice) {
+              // Drop audio - no voice detected
+              return;
+            }
+          } catch (error) {
+            // On error, pass through audio to maintain service availability
+            console.warn('⚠️ [RealtimeWS] Cobra VAD error, passing through audio:', error.message);
           }
         }
         
@@ -2652,6 +2684,11 @@ Please call ${name} back at ${phone} to address their inquiry.
       // Get session data before cleanup (needed for email/cleanup tasks)
       const session = this.stateManager.getSession(sessionId);
       const businessId = this.tenantContextManager ? this.tenantContextManager.getBusinessId(sessionId) : null;
+
+      // Clean up Cobra VAD session (skip for Twilio calls - they use TwilioBridgeService)
+      if (!sessionData.twilioCallSid) {
+        await this.cobraVAD.cleanupSession(sessionId);
+      }
 
       // Remove from sessions first to prevent close handler from triggering duplicate cleanup
       this.sessions.delete(sessionId);

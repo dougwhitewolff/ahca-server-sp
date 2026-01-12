@@ -3,6 +3,7 @@ const EventEmitter = require('events');
 const { performance } = require('perf_hooks');
 const { create, ConverterType } = require('@alexanderolsen/libsamplerate-js');
 const twilio = require('twilio');
+const { CobraVADService } = require('./CobraVADService');
 
 /**
  * TwilioBridgeService (Simplified)
@@ -11,9 +12,12 @@ const twilio = require('twilio');
  * - Outbound: OpenAI PCM16 24k → downsample ÷3 (decimate) → μ-law 8k → Twilio
  */
 class TwilioBridgeService {
-  constructor(realtimeWSService) {
+  constructor(realtimeWSService, cobraVADService = null) {
     this.realtimeWSService = realtimeWSService;
     this.callSidToSession = new Map();
+    
+    // Initialize Cobra VAD service (create if not provided)
+    this.cobraVAD = cobraVADService || new CobraVADService();
     
     // Noise gate configuration
     this.noiseGateEnabled = process.env.NOISE_GATE_ENABLED !== 'false'; // Enabled by default
@@ -99,6 +103,10 @@ class TwilioBridgeService {
       // resamplerInbound, // Persistent resampler: 8kHz -> 16kHz
       // resamplerOutbound, // Persistent resampler: 24kHz -> 8kHz
     });
+
+    // Initialize Cobra VAD for this session (Twilio audio is 8kHz)
+    await this.cobraVAD.initializeSession(sessionId, 8000);
+
     return sessionId;
   }
 
@@ -122,6 +130,9 @@ class TwilioBridgeService {
       //     console.warn('⚠️ [TwilioBridge] Failed to destroy outbound resampler:', e.message);
       //   }
       // }
+
+      // Clean up Cobra VAD session
+      await this.cobraVAD.cleanupSession(entry.sessionId);
 
       await this.realtimeWSService.closeSession(entry.sessionId);
       this.callSidToSession.delete(callSid);
@@ -151,31 +162,34 @@ class TwilioBridgeService {
       const sessionData = this.realtimeWSService.sessions.get(entry.sessionId);
       if (!sessionData) return;
 
-      // Apply noise gate if enabled
-      if (this.noiseGateEnabled) {
-        // Decode μ-law to PCM for analysis
-        const muLawBuf = Buffer.from(payloadBase64, 'base64');
-        const pcm = this.decodeMuLawToPCM16(muLawBuf);
-        
-        // Apply noise gate
-        const gatedPcm = this.applyNoiseGate(pcm);
-        
-        // Re-encode to μ-law
-        const gatedMuLaw = this.encodePCM16ToMuLaw(gatedPcm);
-        const gatedBase64 = gatedMuLaw.toString('base64');
-        
-        // Send gated audio to OpenAI
-        this.realtimeWSService.handleClientMessage(sessionData, {
-          type: 'audio',
-          data: gatedBase64
-        });
-      } else {
-        // Direct passthrough if noise gate is disabled
-        this.realtimeWSService.handleClientMessage(sessionData, {
-          type: 'audio',
-          data: payloadBase64
-        });
+      // Decode μ-law to PCM for processing
+      const muLawBuf = Buffer.from(payloadBase64, 'base64');
+      const pcm = this.decodeMuLawToPCM16(muLawBuf);
+
+      // Apply Cobra VAD to check for voice activity
+      const vadResult = await this.cobraVAD.processAudio(entry.sessionId, pcm, 8000);
+      
+      // Only forward audio if voice is detected
+      if (!vadResult.hasVoice) {
+        // Drop audio - no voice detected
+        return;
       }
+
+      // Apply noise gate if enabled (after VAD check)
+      let processedPcm = pcm;
+      if (this.noiseGateEnabled) {
+        processedPcm = this.applyNoiseGate(pcm);
+      }
+      
+      // Re-encode to μ-law
+      const muLaw = this.encodePCM16ToMuLaw(processedPcm);
+      const base64 = muLaw.toString('base64');
+      
+      // Send processed audio to OpenAI
+      this.realtimeWSService.handleClientMessage(sessionData, {
+        type: 'audio',
+        data: base64
+      });
     } catch (e) {
       // Swallow to keep real-time path resilient
       // eslint-disable-next-line no-console
