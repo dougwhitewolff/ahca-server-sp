@@ -239,8 +239,7 @@ class BusinessConfigService {
       'database.vectorIndexName',
       'calendar.provider',
       'email.provider',
-      'companyInfo.name',
-      'promptConfig.agentName'
+      'companyInfo.name'
     ];
     
     for (const field of requiredFields) {

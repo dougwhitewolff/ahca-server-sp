@@ -1,14 +1,15 @@
 /**
  * Real-time Communication Services
- * WebSocket, VAD, and real-time processing services
+ * WebSocket and real-time audio processing services
  */
 
-const { RealtimeVADService } = require('./RealtimeVADService');
+// RealtimeVADService - DEPRECATED: Legacy VAD service, removed in favor of OpenAI server VAD + RNNoise
+// const { RealtimeVADService } = require('./RealtimeVADService');
 const { RealtimeWebSocketService } = require('./RealtimeWebSocketService');
 const { TwilioBridgeService } = require('./TwilioBridgeService');
 
 module.exports = {
-  RealtimeVADService,
+  // RealtimeVADService, // DEPRECATED - removed 2026-01-13
   RealtimeWebSocketService,
   TwilioBridgeService
 };

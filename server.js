@@ -58,7 +58,7 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // Routes
 app.use('/api/knowledge', require('./features/voice-agent/routes/knowledge'));
 app.use('/api/voice-tools', require('./features/voice-agent/routes/voice-tools'));
-app.use('/api/chained-voice', require('./features/voice-agent/routes/chained-voice'));
+// Legacy chained-voice route removed - using Realtime API now
 app.use('/api/estimate', require('./features/estimator/routes/estimate'));
 app.use('/twilio', require('./features/voice-agent/routes/twilio-voice'));
 

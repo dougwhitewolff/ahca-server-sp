@@ -62,19 +62,6 @@
     }
   },
   
-  "promptConfig": {
-    "agentName": "Sam",
-    "agentPersonality": "professional, helpful, and efficient",
-    "greeting": "Hi there, I'm Sam, Superior Fence & Construction's virtual assistant. If this is an emergency, please press the pound key now to reach our on-call team. Parts of this call may be recorded so we can better understand your needs and improve our service. To get started, what are you calling about today?"
-  },
-  
-  "agent": {
-    "name": "Sam",
-    "role": "Virtual Assistant",
-    "personality": "Professional, helpful, and efficient",
-    "primaryFunction": "Information collection and emergency routing"
-  },
-  
   "twilio": {
     "note": "Currently using SherpaPrompt's Twilio number (+15035501817). Twilio developers need to set up dedicated number for Superior Fencing when ready.",
     "emergencyHandling": {
