@@ -23,7 +23,7 @@ const { EmailService } = require('../../../shared/services/EmailService');
 const { SmsService } = require('../../../shared/services/SmsService');
 const { BusinessConfigService } = require('../../../shared/services/BusinessConfigService');
 const { TenantContextManager } = require('../../../shared/services/TenantContextManager');
-const { CobraVADService } = require('../services/realtime/CobraVADService');
+const { KrispVivaService } = require('../services/realtime/KrispVivaService');
 
 // Initialize services
 const openAIService = new OpenAIService();
@@ -37,8 +37,8 @@ const smsService = new SmsService();
 const businessConfigService = new BusinessConfigService();
 const tenantContextManager = new TenantContextManager();
 
-// Initialize Cobra VAD service (shared between RealtimeWebSocketService and TwilioBridgeService)
-const cobraVADService = new CobraVADService();
+// Initialize Krisp Viva service (shared between RealtimeWebSocketService and TwilioBridgeService)
+const krispVivaService = new KrispVivaService();
 
 // Initialize domain services
 const stateManager = new ConversationStateManager();
@@ -148,7 +148,7 @@ const realtimeWSService = new RealtimeWebSocketService(
   businessConfigService,
   tenantContextManager,
   smsService,
-  cobraVADService
+  krispVivaService
 );
 
 // Inject RealtimeWSService reference back into ConversationFlowHandler for emergency call handling
@@ -233,5 +233,5 @@ function setupRealtimeWebSocket(wss) {
   console.log('✅ [RealtimeWS] WebSocket handler ready');
 }
 
-module.exports = { setupRealtimeWebSocket, realtimeWSService, cobraVADService };
+module.exports = { setupRealtimeWebSocket, realtimeWSService, krispVivaService };
 

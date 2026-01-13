@@ -3,7 +3,7 @@ const EventEmitter = require('events');
 const { performance } = require('perf_hooks');
 const { create, ConverterType } = require('@alexanderolsen/libsamplerate-js');
 const twilio = require('twilio');
-const { CobraVADService } = require('./CobraVADService');
+const { KrispVivaService } = require('./KrispVivaService');
 
 /**
  * TwilioBridgeService (Simplified)
@@ -12,21 +12,12 @@ const { CobraVADService } = require('./CobraVADService');
  * - Outbound: OpenAI PCM16 24k → downsample ÷3 (decimate) → μ-law 8k → Twilio
  */
 class TwilioBridgeService {
-  constructor(realtimeWSService, cobraVADService = null) {
+  constructor(realtimeWSService, krispVivaService = null) {
     this.realtimeWSService = realtimeWSService;
     this.callSidToSession = new Map();
     
-    // Initialize Cobra VAD service (create if not provided)
-    this.cobraVAD = cobraVADService || new CobraVADService();
-    
-    // Noise gate configuration
-    this.noiseGateEnabled = process.env.NOISE_GATE_ENABLED !== 'false'; // Enabled by default
-    this.noiseGateThresholdDb = parseFloat(process.env.NOISE_GATE_THRESHOLD_DB || '-45'); // dB
-    this.noiseGateRatio = parseFloat(process.env.NOISE_GATE_RATIO || '0.1'); // 10% when below threshold
-    
-    if (this.noiseGateEnabled) {
-      console.log(`🎙️ [TwilioBridge] Noise gate enabled: threshold=${this.noiseGateThresholdDb}dB, ratio=${this.noiseGateRatio}`);
-    }
+    // Initialize Krisp Viva service (create if not provided)
+    this.krispViva = krispVivaService || new KrispVivaService();
     
     if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
       this.twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
@@ -35,6 +26,9 @@ class TwilioBridgeService {
       // eslint-disable-next-line no-console
       console.warn('⚠️ [TwilioBridge] Twilio client not initialized. TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN are required for call control features.');
     }
+
+    // Debug counters for inbound audio
+    this._inboundPacketCount = 0;
   }
 
   async start(callSid, twilioWs, streamSid, businessId, fromPhone = null, toPhone = null, baseUrl = null, returnFromTransfer = false, staffName = null) {
@@ -104,8 +98,8 @@ class TwilioBridgeService {
       // resamplerOutbound, // Persistent resampler: 24kHz -> 8kHz
     });
 
-    // Initialize Cobra VAD for this session (Twilio audio is 8kHz)
-    await this.cobraVAD.initializeSession(sessionId, 8000);
+    // Initialize Krisp Viva for this session (Twilio audio is 8kHz)
+    await this.krispViva.initializeSession(sessionId, 8000);
 
     return sessionId;
   }
@@ -131,8 +125,8 @@ class TwilioBridgeService {
       //   }
       // }
 
-      // Clean up Cobra VAD session
-      await this.cobraVAD.cleanupSession(entry.sessionId);
+      // Clean up Krisp Viva session
+      await this.krispViva.cleanupSession(entry.sessionId);
 
       await this.realtimeWSService.closeSession(entry.sessionId);
       this.callSidToSession.delete(callSid);
@@ -159,6 +153,11 @@ class TwilioBridgeService {
     if (!entry || !payloadBase64) return;
 
     try {
+      this._inboundPacketCount++;
+      if (this._inboundPacketCount % 200 === 0) {
+        console.log(`🎧 [TwilioBridge] Inbound audio packets: ${this._inboundPacketCount} (callSid: ${callSid})`);
+      }
+
       const sessionData = this.realtimeWSService.sessions.get(entry.sessionId);
       if (!sessionData) return;
 
@@ -166,20 +165,11 @@ class TwilioBridgeService {
       const muLawBuf = Buffer.from(payloadBase64, 'base64');
       const pcm = this.decodeMuLawToPCM16(muLawBuf);
 
-      // Apply Cobra VAD to check for voice activity
-      const vadResult = await this.cobraVAD.processAudio(entry.sessionId, pcm, 8000);
-      
-      // Only forward audio if voice is detected
-      if (!vadResult.hasVoice) {
-        // Drop audio - no voice detected
-        return;
-      }
+      // Process through Krisp Viva (noise suppression + VAD)
+      const result = await this.krispViva.processAudio(entry.sessionId, pcm, 8000);
 
-      // Apply noise gate if enabled (after VAD check)
-      let processedPcm = pcm;
-      if (this.noiseGateEnabled) {
-        processedPcm = this.applyNoiseGate(pcm);
-      }
+      // Use processed audio from Krisp Viva (noise suppression already applied)
+      const processedPcm = result.processedAudio;
       
       // Re-encode to μ-law
       const muLaw = this.encodePCM16ToMuLaw(processedPcm);
@@ -197,36 +187,6 @@ class TwilioBridgeService {
     }
   }
 
-  /**
-   * Apply noise gate to PCM audio
-   * @param {Int16Array} pcm - Input PCM data
-   * @returns {Int16Array} Gated PCM data
-   */
-  applyNoiseGate(pcm) {
-    // Calculate RMS (Root Mean Square) for volume measurement
-    let sumSquares = 0;
-    for (let i = 0; i < pcm.length; i++) {
-      const normalized = pcm[i] / 32768.0; // Normalize to -1.0 to 1.0
-      sumSquares += normalized * normalized;
-    }
-    const rms = Math.sqrt(sumSquares / pcm.length);
-    
-    // Convert RMS to dB (decibels)
-    const rmsDb = 20 * Math.log10(rms + 1e-10); // Add small value to avoid log(0)
-    
-    // Apply gate
-    if (rmsDb < this.noiseGateThresholdDb) {
-      // Below threshold - attenuate by ratio
-      const gated = new Int16Array(pcm.length);
-      for (let i = 0; i < pcm.length; i++) {
-        gated[i] = Math.round(pcm[i] * this.noiseGateRatio);
-      }
-      return gated;
-    } else {
-      // Above threshold - pass through unchanged
-      return pcm;
-    }
-  }
 
   /**
    * Resample PCM audio data using a persistent resampler instance
