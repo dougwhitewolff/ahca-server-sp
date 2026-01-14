@@ -49,7 +49,6 @@
     "services": [
       "Drive-up food pickup",
       "Walk-up food pickup",
-      "Food delivery service",
       "Online drive-up orders",
       "Rental and utility assistance (HRSN program)",
       "Doernbecher Children's Hospital partnership"
@@ -60,7 +59,7 @@
       "driveup_thursday": "10:00 AM - 1:00 PM",
       "walkup_tuesday": "4:00 PM - 7:00 PM",
       "walkup_thursday": "10:00 AM - 1:00 PM",
-      "note": "Online orders available at nourishoregon.com"
+      "note": "Online drive-up orders available at nourishoregon.com"
     },
     "eligibility": {
       "serviceArea": "Oregon and Southeast Washington",
@@ -120,7 +119,7 @@
     "agentPersonality": "warm and personal",
     "agentType": "virtual assistant",
     "greeting": "Thanks for calling Nourish Oregon. This is Jacob, Nourish Oregon's virtual assistant. This call may be recorded for improving our services. I'll make sure you reach the right person to help you. Feel free to ask me any questions—if I can't help, I'll connect you with someone who can. What can I help you with today?",
-    "afterHoursGreeting": "Thanks for calling Nourish Oregon. We're currently closed. Our drive-up hours are Monday and Tuesday from 4 to 7 PM, and Thursday from 10 AM to 1 PM. Walk-up hours are Tuesday from 4 to 7 PM and Thursday from 10 AM to 1 PM. You can also place online orders at nourishoregon.com. Please call back during our hours, or leave your name and number and we'll get back to you."
+    "afterHoursGreeting": "Thanks for calling Nourish Oregon. We're currently closed. Our drive-up hours are Monday and Tuesday from 4 to 7 PM, and Thursday from 10 AM to 1 PM. Walk-up hours are Tuesday from 4 to 7 PM and Thursday from 10 AM to 1 PM. You can also place online drive-up orders at nourishoregon.com. Please call back during our hours, or leave your name and number and we'll get back to you."
   },
   
   "agent": {
@@ -136,13 +135,6 @@
     "autoDetect": true,
     "note": "Agent can answer questions in Spanish but cannot transfer to Spanish-speaking staff"
   },
-  
-  "keyPhrases": [
-    "We're glad you called",
-    "We're here to help",
-    "No income requirements",
-    "No ID required"
-  ],
   
   "twilio": {
     "note": "Twilio phone number to be assigned for Nourish Oregon",
