@@ -365,7 +365,7 @@ class NourishOregonHandler {
     if (questionLower.includes('service') || questionLower.includes('what do you') || questionLower.includes('what can')) {
       return {
         success: true,
-        response: "We offer drive-up food pickup and walk-up pickup. You can place online drive-up orders at nourishoregon.com. We also have rental and utility assistance through our HRSN program, and we partner with Doernbecher Children's Hospital."
+        response: "We offer drive-up food pickup and walk-up pickup. You can place online drive-up orders at nourishoregon.com. We also partner with Doernbecher Children's Hospital to provide additional support."
       };
     }
     

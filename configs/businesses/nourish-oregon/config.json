@@ -50,8 +50,10 @@
       "Drive-up food pickup",
       "Walk-up food pickup",
       "Online drive-up orders",
-      "Rental and utility assistance (HRSN program)",
       "Doernbecher Children's Hospital partnership"
+    ],
+    "privateServices": [
+      "Rental and utility assistance (HRSN program) - DO NOT ADVERTISE, only mention if specifically asked"
     ],
     "hours": {
       "driveup_monday": "4:00 PM - 7:00 PM",
