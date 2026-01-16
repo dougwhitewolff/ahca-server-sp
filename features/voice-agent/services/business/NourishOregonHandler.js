@@ -236,7 +236,7 @@ class NourishOregonHandler {
     }
     
     return businessConfig?.promptConfig?.greeting || 
-      "Thanks for calling Nourish Oregon. This is Jacob, Nourish Oregon's virtual assistant. This call may be recorded for improving our services. I'll make sure you reach the right person to help you. Feel free to ask me any questions—if I can't help, I'll connect you with someone who can. What can I help you with today?";
+      "Thanks for calling Nourish Oregon. This is Jacob, Nourish Oregon's virtual assistant. This call is recorded for quality and service purposes. By continuing, you consent. I'll make sure you reach the right person to help you. Feel free to ask me any questions—if I can't help, I'll connect you with someone who can. What can I help you with today?";
   }
 
   /**
