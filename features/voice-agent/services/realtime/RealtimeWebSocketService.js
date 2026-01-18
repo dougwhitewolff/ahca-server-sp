@@ -42,7 +42,7 @@ class RealtimeWebSocketService extends EventEmitter {
       normal: {
         threshold: 0.6,
         prefix_padding_ms: 300,
-        silence_duration_ms: 600,
+        silence_duration_ms: 800,
         create_response: true,
         interrupt_response: false
       },
