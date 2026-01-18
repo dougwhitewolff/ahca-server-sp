@@ -307,9 +307,10 @@ class RealtimeWebSocketService extends EventEmitter {
         input_audio_transcription: {
           model: 'whisper-1'
         },
-        input_audio_noise_reduction: {
-          type: 'near_field'  // Optimized for phone calls (close microphone)
-        },
+        // Noise reduction removed - handled by Krisp
+        // input_audio_noise_reduction: {
+        //   type: 'near_field'
+        // },
         turn_detection: {
           type: 'server_vad',
           ...this.VAD_CONFIG.normal  // Use normal VAD config initially
@@ -321,7 +322,7 @@ class RealtimeWebSocketService extends EventEmitter {
     };
 
     console.log('⚙️ [RealtimeWS] Configuring session with', config.session.tools.length, 'tools');
-    console.log('🔇 [RealtimeWS] Noise reduction enabled: near_field (optimized for phone calls)');
+    // console.log('🔇 [RealtimeWS] Noise reduction enabled: near_field (optimized for phone calls)');
     openaiWs.send(JSON.stringify(config));
   }
 
@@ -825,27 +826,11 @@ IMPORTANT: This sends SMS + Email notifications to April and the intended staff 
 
     clientWs.on('close', (code, reason) => {
       console.log('🔌 [RealtimeWS] Client disconnected:', sessionId, 'code:', code, 'reason:', reason?.toString());
-      // Log state at time of disconnect for debugging
-      if (sessionData) {
-        console.log('📊 [RealtimeWS] Session state at disconnect:', {
-          isResponding: sessionData.isResponding,
-          activeResponseId: sessionData.activeResponseId,
-          hasUnblockTimeout: !!sessionData.audioUnblockTimeout
-        });
-      }
       this.closeSession(sessionId);
     });
 
     clientWs.on('error', (error) => {
       console.error('❌ [RealtimeWS] Client WebSocket error:', sessionId, error);
-      // Log state at time of error for debugging
-      if (sessionData) {
-        console.log('📊 [RealtimeWS] Session state at error:', {
-          isResponding: sessionData.isResponding,
-          activeResponseId: sessionData.activeResponseId,
-          hasUnblockTimeout: !!sessionData.audioUnblockTimeout
-        });
-      }
     });
   }
 
@@ -1052,12 +1037,6 @@ IMPORTANT: This sends SMS + Email notifications to April and the intended staff 
             sessionData.discardingSpeech = false;
             sessionData.speechDuringResponseTimestamp = null;
           }
-          // Clear any pending audio unblock timeout from previous response
-          if (sessionData.audioUnblockTimeout) {
-            clearTimeout(sessionData.audioUnblockTimeout);
-            sessionData.audioUnblockTimeout = null;
-            console.log('🔄 [RealtimeWS] Cleared pending audio unblock timeout - new response starting');
-          }
         }
         sessionData.isResponding = true;  // Track that AI is responding
         sessionData.activeResponseId = event.response_id || 'active';  // Track active response
@@ -1103,7 +1082,7 @@ IMPORTANT: This sends SMS + Email notifications to April and the intended staff 
         break;
 
       case 'response.done':
-        console.log('✅ [RealtimeWS] Response generation completed (audio still playing)');
+        console.log('✅ [RealtimeWS] Response generation completed');
         
         // Calculate estimated audio playback duration based on transcript length
         const transcript = sessionData.currentResponseTranscript || '';
@@ -1111,63 +1090,15 @@ IMPORTANT: This sends SMS + Email notifications to April and the intended staff 
         
         console.log(`⏱️ [RealtimeWS] Estimated audio duration: ${estimatedDurationMs}ms for transcript (${transcript.length} chars)`);
         
-        // CRITICAL: Keep isResponding=true until audio finishes playing
-        // Don't re-enable audio input yet - wait for playback to complete
-        // We'll set isResponding=false after the estimated duration
+        // Immediately clear response state - audio input is ALWAYS enabled (barge-in support)
+        sessionData.isResponding = false;
+        sessionData.activeResponseId = null;
+        sessionData.suppressAudio = false;
         
-        // Schedule VAD config reversion AND audio input re-enable after audio finishes playing
-        // Clear any existing timeout first
+        // Clear any existing VAD revert timeout
         if (sessionData.vadRevertTimeout) {
           clearTimeout(sessionData.vadRevertTimeout);
         }
-        
-        if (sessionData.audioUnblockTimeout) {
-          clearTimeout(sessionData.audioUnblockTimeout);
-        }
-        
-        // Schedule audio input re-enable after playback finishes
-        // Add safety margin (500ms) to ensure audio has finished playing
-        const safetyMarginMs = 500;
-        const totalWaitTime = estimatedDurationMs + safetyMarginMs;
-        
-        sessionData.audioUnblockTimeout = setTimeout(() => {
-          try {
-            // Double-check session still exists (might have been closed)
-            if (!this.sessions.has(sessionId)) {
-              console.log('⚠️ [RealtimeWS] Session no longer exists, skipping audio unblock');
-              return;
-            }
-            
-            console.log('🔊 [RealtimeWS] Audio playback finished - re-enabling audio input');
-            sessionData.isResponding = false;  // AI finished speaking (audio playback complete)
-            sessionData.activeResponseId = null;  // Clear active response ID
-            sessionData.suppressAudio = false; // Clear suppression at end of response
-            sessionData.audioUnblockTimeout = null;
-            console.log('🔊 [RealtimeWS] Audio input now enabled. isResponding:', sessionData.isResponding, 'activeResponseId:', sessionData.activeResponseId);
-          } catch (error) {
-            console.error('❌ [RealtimeWS] Error in audio unblock timeout:', error);
-            // Safety: Force unblock even if there's an error
-            if (sessionData) {
-              sessionData.isResponding = false;
-              sessionData.activeResponseId = null;
-              sessionData.audioUnblockTimeout = null;
-            }
-          }
-        }, totalWaitTime);
-        
-        // Safety: Also set a maximum timeout (30 seconds) to ensure audio is always unblocked
-        // This prevents audio from being blocked forever if something goes wrong
-        if (sessionData.audioUnblockSafetyTimeout) {
-          clearTimeout(sessionData.audioUnblockSafetyTimeout);
-        }
-        sessionData.audioUnblockSafetyTimeout = setTimeout(() => {
-          if (sessionData && sessionData.isResponding) {
-            console.warn('⚠️ [RealtimeWS] Safety timeout: Force unblocking audio after 30 seconds');
-            sessionData.isResponding = false;
-            sessionData.activeResponseId = null;
-            sessionData.audioUnblockSafetyTimeout = null;
-          }
-        }, 30000); // 30 second maximum
         
         // Schedule VAD config reversion after audio finishes playing
         sessionData.vadRevertTimeout = setTimeout(async () => {
@@ -2609,14 +2540,6 @@ Please call ${name} back at ${phone} to address their inquiry.
       if (sessionData.vadRevertTimeout) {
         clearTimeout(sessionData.vadRevertTimeout);
         sessionData.vadRevertTimeout = null;
-      }
-      if (sessionData.audioUnblockTimeout) {
-        clearTimeout(sessionData.audioUnblockTimeout);
-        sessionData.audioUnblockTimeout = null;
-      }
-      if (sessionData.audioUnblockSafetyTimeout) {
-        clearTimeout(sessionData.audioUnblockSafetyTimeout);
-        sessionData.audioUnblockSafetyTimeout = null;
       }
 
       // If this is a Twilio call, hang up the call legs

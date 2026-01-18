@@ -2,16 +2,17 @@ const WebSocket = require('ws');
 const EventEmitter = require('events');
 const { performance } = require('perf_hooks');
 const twilio = require('twilio');
+const { KrispService } = require('./KrispService');
 
 /**
- * TwilioBridgeService (Simplified with RNNoise)
- * Purpose: Bridge Twilio audio to OpenAI Realtime API with noise suppression
- * - Inbound: Twilio μ-law 8k → decode → RNNoise → encode → OpenAI
+ * TwilioBridgeService (with Krisp Noise Suppression)
+ * Purpose: Bridge Twilio audio to OpenAI Realtime API with advanced noise suppression
+ * - Inbound: Twilio μ-law 8k → decode → Krisp NC → encode → OpenAI
  * - Outbound: OpenAI μ-law → Twilio
  * 
  * Audio Pipeline:
  * 1. Decode μ-law to PCM16
- * 2. Apply RNNoise (removes background conversations)
+ * 2. Apply Krisp Noise Cancellation (removes background conversations)
  * 3. Re-encode to μ-law
  * 4. Forward to OpenAI (which has its own VAD for turn detection)
  */
@@ -20,9 +21,14 @@ class TwilioBridgeService {
     this.realtimeWSService = realtimeWSService;
     this.callSidToSession = new Map();
     
-    // Audio processing note: Noise reduction is handled by OpenAI Realtime API
-    // OpenAI has built-in 'near_field' noise reduction optimized for phone calls
-    console.log('🎤 [TwilioBridge] Using OpenAI built-in noise reduction (near_field mode)');
+    // Initialize Krisp noise suppression service
+    this.krispService = new KrispService();
+    
+    if (this.krispService.enabled) {
+      console.log('🎤 [TwilioBridge] Krisp noise suppression enabled');
+    } else {
+      console.log('🎤 [TwilioBridge] Krisp disabled - audio will be passed through directly');
+    }
     
     if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
       this.twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
@@ -45,6 +51,11 @@ class TwilioBridgeService {
         // eslint-disable-next-line no-console
         console.warn('⚠️ [TwilioBridge] Failed to set tenant context:', e.message);
       }
+    }
+
+    // Initialize Krisp session for this call
+    if (this.krispService.enabled) {
+      await this.krispService.createSession(sessionId);
     }
 
     // This is a mocked WebSocket-like object that pipes messages to the bridge's onAgentMessage
@@ -70,7 +81,10 @@ class TwilioBridgeService {
     // Persist caller/callee phone numbers into session user info for later SMS
     try {
       if (fromPhone && this.realtimeWSService && this.realtimeWSService.stateManager) {
-        this.realtimeWSService.stateManager.updateUserInfo(sessionId, { phone: fromPhone });
+        // We do NOT update the session with the caller's phone number automatically
+        // This forces the agent to explicitly ask for the phone number
+        // this.realtimeWSService.stateManager.updateUserInfo(sessionId, { phone: fromPhone });
+        console.log(`📞 [TwilioBridge] Not auto-populating session with caller phone: ${fromPhone}`);
       }
       if (toPhone && this.realtimeWSService && this.realtimeWSService.stateManager) {
         this.realtimeWSService.stateManager.updateSession(sessionId, { businessLine: toPhone });
@@ -97,6 +111,11 @@ class TwilioBridgeService {
   async stop(callSid) {
     const entry = this.callSidToSession.get(callSid);
     if (entry) {
+      // Clean up Krisp session
+      if (this.krispService.enabled) {
+        await this.krispService.cleanup(entry.sessionId);
+      }
+      
       await this.realtimeWSService.closeSession(entry.sessionId);
       this.callSidToSession.delete(callSid);
     }
@@ -125,12 +144,31 @@ class TwilioBridgeService {
       const sessionData = this.realtimeWSService.sessions.get(entry.sessionId);
       if (!sessionData) return;
 
-      // Forward audio directly to OpenAI
-      // OpenAI Realtime API has built-in noise reduction (near_field mode) + server VAD
-      this.realtimeWSService.handleClientMessage(sessionData, {
-        type: 'audio',
-        data: payloadBase64
-      });
+      // If Krisp is enabled, process audio through noise cancellation pipeline
+      if (this.krispService.enabled) {
+        // Step 1: Decode μ-law to PCM16
+        const muLawBuf = Buffer.from(payloadBase64, 'base64');
+        const pcm16 = this.decodeMuLawToPCM16(muLawBuf);
+
+        // Step 2: Apply Krisp noise cancellation
+        const denoisedPcm = this.krispService.processAudio(entry.sessionId, pcm16);
+
+        // Step 3: Re-encode to μ-law
+        const cleanMuLaw = this.encodePCM16ToMuLaw(denoisedPcm);
+        const cleanBase64 = cleanMuLaw.toString('base64');
+
+        // Step 4: Forward to OpenAI
+        this.realtimeWSService.handleClientMessage(sessionData, {
+          type: 'audio',
+          data: cleanBase64
+        });
+      } else {
+        // Krisp disabled - direct passthrough
+        this.realtimeWSService.handleClientMessage(sessionData, {
+          type: 'audio',
+          data: payloadBase64
+        });
+      }
     } catch (e) {
       // Swallow to keep real-time path resilient
       // eslint-disable-next-line no-console
@@ -244,9 +282,15 @@ class TwilioBridgeService {
   }
 
   encodePCM16ToMuLaw(pcm) {
-    const out = Buffer.alloc(pcm.length);
-    for (let i = 0; i < pcm.length; i++) {
-      out[i] = this.muLawEncodeSample(pcm[i]);
+    // pcm is a Buffer of 16-bit little-endian samples
+    // Output should be half the size (8-bit samples)
+    const out = Buffer.alloc(pcm.length / 2);
+    
+    for (let i = 0; i < pcm.length; i += 2) {
+      // Read 16-bit signed integer (Little Endian)
+      const sample = pcm.readInt16LE(i);
+      // Encode to 8-bit µ-law
+      out[i / 2] = this.muLawEncodeSample(sample);
     }
     return out;
   }
