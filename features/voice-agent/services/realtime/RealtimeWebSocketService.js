@@ -6,10 +6,9 @@
 
 const WebSocket = require('ws');
 const EventEmitter = require('events');
-const { KrispVivaService } = require('./KrispVivaService');
 
 class RealtimeWebSocketService extends EventEmitter {
-  constructor(conversationFlowHandler, openAIService, stateManager, businessConfigService = null, tenantContextManager = null, smsService = null, krispVivaService = null) {
+  constructor(conversationFlowHandler, openAIService, stateManager, businessConfigService = null, tenantContextManager = null, smsService = null) {
     super();
     this.apiKey = process.env.OPENAI_API_KEY_CALL_AGENT;
 
@@ -25,9 +24,6 @@ class RealtimeWebSocketService extends EventEmitter {
     this.tenantContextManager = tenantContextManager;
     this.smsService = smsService;
     this.bridgeService = null; // To be injected post-instantiation
-    
-    // Initialize Krisp Viva service (create if not provided)
-    this.krispViva = krispVivaService || new KrispVivaService();
 
     // Active sessions: sessionId -> { clientWs, openaiWs, state }
     this.sessions = new Map();
@@ -46,17 +42,17 @@ class RealtimeWebSocketService extends EventEmitter {
       normal: {
         threshold: 0.6,
         prefix_padding_ms: 300,
-        silence_duration_ms: 600,
+        silence_duration_ms: 800,
         create_response: true,
         interrupt_response: false
       },
-      // Assistant-speaking VAD settings (more strict to prevent false barge-ins)
+      // Assistant-speaking VAD settings (relaxed to allow barge-in)
       assistantSpeaking: {
-        threshold: 1,                    // Higher threshold (requires more confident speech)
+        threshold: 0.7,                  // Lower threshold to allow interruption
         prefix_padding_ms: 300,
         silence_duration_ms: 800,        
         create_response: true,
-        interrupt_response: false
+        interrupt_response: true
       }
     };
   }
@@ -186,11 +182,8 @@ class RealtimeWebSocketService extends EventEmitter {
       // Configure session with function tools
       await this.configureSession(sessionData);
 
-      // Initialize Krisp Viva for this session (web clients use 24kHz)
-      // Skip for Twilio calls (they use TwilioBridgeService)
-      if (!metadata.twilioCallSid) {
-        await this.krispViva.initializeSession(sessionId, 24000);
-      }
+      // Note: Audio processing (including noise suppression) is handled by TwilioBridgeService
+      // Web clients would connect through a different path if needed
 
       // Trigger appropriate greeting based on context
       if (metadata.returnFromTransfer) {
@@ -314,21 +307,22 @@ class RealtimeWebSocketService extends EventEmitter {
         input_audio_transcription: {
           model: 'whisper-1'
         },
-        input_audio_noise_reduction: {
-          type: 'near_field'  // Optimized for phone calls (close microphone)
-        },
+        // Noise reduction removed - handled by Krisp
+        // input_audio_noise_reduction: {
+        //   type: 'near_field'
+        // },
         turn_detection: {
           type: 'server_vad',
           ...this.VAD_CONFIG.normal  // Use normal VAD config initially
         },
         tools: this.defineTools(sessionData.sessionId),
         tool_choice: 'auto',
-        temperature: 0.8
+        temperature: 0.6
       }
     };
 
     console.log('⚙️ [RealtimeWS] Configuring session with', config.session.tools.length, 'tools');
-    console.log('🔇 [RealtimeWS] Noise reduction enabled: near_field (optimized for phone calls)');
+    // console.log('🔇 [RealtimeWS] Noise reduction enabled: near_field (optimized for phone calls)');
     openaiWs.send(JSON.stringify(config));
   }
 
@@ -832,27 +826,11 @@ IMPORTANT: This sends SMS + Email notifications to April and the intended staff 
 
     clientWs.on('close', (code, reason) => {
       console.log('🔌 [RealtimeWS] Client disconnected:', sessionId, 'code:', code, 'reason:', reason?.toString());
-      // Log state at time of disconnect for debugging
-      if (sessionData) {
-        console.log('📊 [RealtimeWS] Session state at disconnect:', {
-          isResponding: sessionData.isResponding,
-          activeResponseId: sessionData.activeResponseId,
-          hasUnblockTimeout: !!sessionData.audioUnblockTimeout
-        });
-      }
       this.closeSession(sessionId);
     });
 
     clientWs.on('error', (error) => {
       console.error('❌ [RealtimeWS] Client WebSocket error:', sessionId, error);
-      // Log state at time of error for debugging
-      if (sessionData) {
-        console.log('📊 [RealtimeWS] Session state at error:', {
-          isResponding: sessionData.isResponding,
-          activeResponseId: sessionData.activeResponseId,
-          hasUnblockTimeout: !!sessionData.audioUnblockTimeout
-        });
-      }
     });
   }
 
@@ -864,31 +842,11 @@ IMPORTANT: This sends SMS + Email notifications to April and the intended staff 
 
     switch (message.type) {
       case 'audio':
-        // Block audio input while agent is responding (uninterruptable mode)
-        // Only block if BOTH conditions are true (defensive check)
-        // Also ensure we're not blocking if state is inconsistent (safety fallback)
-        const shouldBlock = sessionData.isResponding === true && 
-                          sessionData.activeResponseId !== null && 
-                          sessionData.activeResponseId !== undefined;
+        // [BARGE-IN ENABLED] Removed audio blocking
+        // We now allow audio to pass through even when agent is responding
+        // The VAD will handle interruption (speech_started -> response.cancel)
         
-        if (shouldBlock) {
-          // Silently drop audio - don't forward to OpenAI
-          // This prevents any transcription of speech during agent response
-          // Only log occasionally to avoid spam (every 100th packet or so)
-          if (Math.random() < 0.01) {
-            console.log('🔇 [RealtimeWS] Blocking audio input - agent is responding (isResponding:', sessionData.isResponding, 'activeResponseId:', sessionData.activeResponseId, ')');
-          }
-          return;
-        }
-        
-        // Safety: Log if we're in an unexpected state (for debugging)
-        if (sessionData.isResponding === true && sessionData.activeResponseId === null) {
-          if (Math.random() < 0.001) {
-            console.warn('⚠️ [RealtimeWS] Inconsistent state: isResponding=true but activeResponseId=null. Allowing audio anyway.');
-          }
-        }
-        
-        // Apply Krisp Viva to process audio (only for web clients, not Twilio)
+        // Apply Cobra VAD to filter audio (only for web clients, not Twilio)
         // Twilio calls are handled by TwilioBridgeService
         if (!sessionData.twilioCallSid) {
           try {
@@ -896,19 +854,15 @@ IMPORTANT: This sends SMS + Email notifications to April and the intended staff 
             const audioBuffer = Buffer.from(message.data, 'base64');
             const pcm16 = new Int16Array(audioBuffer.buffer, audioBuffer.byteOffset, audioBuffer.length / 2);
             
-            // Process through Krisp Viva (noise suppression + VAD, web clients use 24kHz)
-            const result = await this.krispViva.processAudio(sessionId, pcm16, 24000);
-
-            // Convert processed audio back to base64 for forwarding
-            const processedBuffer = Buffer.from(result.processedAudio.buffer, result.processedAudio.byteOffset, result.processedAudio.length * 2);
-            message.data = processedBuffer.toString('base64');
+            // Note: Audio processing (noise suppression) is handled by TwilioBridgeService for phone calls
+            // Web clients connect directly and OpenAI has built-in noise reduction
           } catch (error) {
             // On error, pass through audio to maintain service availability
-            console.warn('⚠️ [RealtimeWS] Krisp Viva error, passing through audio:', error.message);
+            console.warn('⚠️ [RealtimeWS] Audio processing error, passing through audio:', error.message);
           }
         }
         
-        // Forward audio to OpenAI only when agent is not responding
+        // Forward audio to OpenAI (barge-in enabled)
         if (openaiWs.readyState === WebSocket.OPEN) {
           openaiWs.send(JSON.stringify({
             type: 'input_audio_buffer.append',
@@ -923,13 +877,9 @@ IMPORTANT: This sends SMS + Email notifications to April and the intended staff 
         break;
 
       case 'input_audio_buffer.commit':
-        // Block commit while agent is responding
-        if (sessionData.isResponding && sessionData.activeResponseId) {
-          // Silently drop commit - prevents processing any buffered audio
-          return;
-        }
+        // [BARGE-IN ENABLED] Removed blocking commit
         
-        // Commit audio buffer only when agent is not responding
+        // Commit audio buffer (barge-in enabled)
         if (openaiWs.readyState === WebSocket.OPEN) {
           openaiWs.send(JSON.stringify({
             type: 'input_audio_buffer.commit'
@@ -976,23 +926,22 @@ IMPORTANT: This sends SMS + Email notifications to April and the intended staff 
           this.bridgeService.clearOutputBuffer(sessionData.twilioCallSid);
         }
 
-        // 2. If agent is responding and uninterruptable, clear the input audio buffer
-        // This prevents queued speech from being processed after agent finishes
+        // 2. If agent is responding, cancel the response (Barge-in)
         if (sessionData.isResponding && sessionData.activeResponseId) {
-          console.log('🔇 [RealtimeWS] User spoke during agent response - clearing input buffer to prevent queued processing');
+          console.log('🔇 [RealtimeWS] User spoke during agent response - cancelling response (Barge-in)');
           
           try {
-            // Clear the input audio buffer so this speech won't be transcribed/processed
+            // Cancel the current response so the model stops generating audio
+            // and processes the new user input
             sessionData.openaiWs.send(JSON.stringify({
-              type: 'input_audio_buffer.clear'
+              type: 'response.cancel'
             }));
             
-            // Mark that we're discarding this speech and record timestamp
-            sessionData.discardingSpeech = true;
-            sessionData.speechDuringResponseTimestamp = Date.now();
-            console.log('⏰ [RealtimeWS] Recorded speech timestamp during response:', sessionData.speechDuringResponseTimestamp);
+            // Mark that we're interrupting
+            sessionData.isResponding = false;
+            sessionData.activeResponseId = null;
           } catch (error) {
-            console.log('⚠️ [RealtimeWS] Failed to clear input buffer:', error.message);
+            console.log('⚠️ [RealtimeWS] Failed to cancel response:', error.message);
           }
         } else {
           // Agent is not responding, so this is valid speech
@@ -1025,21 +974,7 @@ IMPORTANT: This sends SMS + Email notifications to April and the intended staff 
       case 'conversation.item.input_audio_transcription.completed':
         console.log('📝 [RealtimeWS] Transcription:', event.transcript);
         
-        // Check if this transcription should be discarded
-        // Either: flag is set, OR transcription arrived within 3 seconds of speech during response
-        const shouldDiscard = sessionData.discardingSpeech || 
-          (sessionData.speechDuringResponseTimestamp && 
-           Date.now() - sessionData.speechDuringResponseTimestamp < 3000 &&
-           !sessionData.isResponding);
-        
-        if (shouldDiscard) {
-          console.log('🗑️ [RealtimeWS] Discarding transcription captured during agent response:', event.transcript);
-          console.log('   Flag:', sessionData.discardingSpeech, 'Timestamp:', sessionData.speechDuringResponseTimestamp, 'Time since:', sessionData.speechDuringResponseTimestamp ? Date.now() - sessionData.speechDuringResponseTimestamp : 'N/A');
-          sessionData.discardingSpeech = false;
-          sessionData.speechDuringResponseTimestamp = null;
-          // Don't add to conversation history, don't trigger response
-          break;
-        }
+        // [BARGE-IN ENABLED] Removed transcription discarding logic
         
         this.sendToClient(sessionData, {
           type: 'transcript',
@@ -1102,12 +1037,6 @@ IMPORTANT: This sends SMS + Email notifications to April and the intended staff 
             sessionData.discardingSpeech = false;
             sessionData.speechDuringResponseTimestamp = null;
           }
-          // Clear any pending audio unblock timeout from previous response
-          if (sessionData.audioUnblockTimeout) {
-            clearTimeout(sessionData.audioUnblockTimeout);
-            sessionData.audioUnblockTimeout = null;
-            console.log('🔄 [RealtimeWS] Cleared pending audio unblock timeout - new response starting');
-          }
         }
         sessionData.isResponding = true;  // Track that AI is responding
         sessionData.activeResponseId = event.response_id || 'active';  // Track active response
@@ -1153,7 +1082,7 @@ IMPORTANT: This sends SMS + Email notifications to April and the intended staff 
         break;
 
       case 'response.done':
-        console.log('✅ [RealtimeWS] Response generation completed (audio still playing)');
+        console.log('✅ [RealtimeWS] Response generation completed');
         
         // Calculate estimated audio playback duration based on transcript length
         const transcript = sessionData.currentResponseTranscript || '';
@@ -1161,63 +1090,15 @@ IMPORTANT: This sends SMS + Email notifications to April and the intended staff 
         
         console.log(`⏱️ [RealtimeWS] Estimated audio duration: ${estimatedDurationMs}ms for transcript (${transcript.length} chars)`);
         
-        // CRITICAL: Keep isResponding=true until audio finishes playing
-        // Don't re-enable audio input yet - wait for playback to complete
-        // We'll set isResponding=false after the estimated duration
+        // Immediately clear response state - audio input is ALWAYS enabled (barge-in support)
+        sessionData.isResponding = false;
+        sessionData.activeResponseId = null;
+        sessionData.suppressAudio = false;
         
-        // Schedule VAD config reversion AND audio input re-enable after audio finishes playing
-        // Clear any existing timeout first
+        // Clear any existing VAD revert timeout
         if (sessionData.vadRevertTimeout) {
           clearTimeout(sessionData.vadRevertTimeout);
         }
-        
-        if (sessionData.audioUnblockTimeout) {
-          clearTimeout(sessionData.audioUnblockTimeout);
-        }
-        
-        // Schedule audio input re-enable after playback finishes
-        // Add safety margin (500ms) to ensure audio has finished playing
-        const safetyMarginMs = 500;
-        const totalWaitTime = estimatedDurationMs + safetyMarginMs;
-        
-        sessionData.audioUnblockTimeout = setTimeout(() => {
-          try {
-            // Double-check session still exists (might have been closed)
-            if (!this.sessions.has(sessionId)) {
-              console.log('⚠️ [RealtimeWS] Session no longer exists, skipping audio unblock');
-              return;
-            }
-            
-            console.log('🔊 [RealtimeWS] Audio playback finished - re-enabling audio input');
-            sessionData.isResponding = false;  // AI finished speaking (audio playback complete)
-            sessionData.activeResponseId = null;  // Clear active response ID
-            sessionData.suppressAudio = false; // Clear suppression at end of response
-            sessionData.audioUnblockTimeout = null;
-            console.log('🔊 [RealtimeWS] Audio input now enabled. isResponding:', sessionData.isResponding, 'activeResponseId:', sessionData.activeResponseId);
-          } catch (error) {
-            console.error('❌ [RealtimeWS] Error in audio unblock timeout:', error);
-            // Safety: Force unblock even if there's an error
-            if (sessionData) {
-              sessionData.isResponding = false;
-              sessionData.activeResponseId = null;
-              sessionData.audioUnblockTimeout = null;
-            }
-          }
-        }, totalWaitTime);
-        
-        // Safety: Also set a maximum timeout (30 seconds) to ensure audio is always unblocked
-        // This prevents audio from being blocked forever if something goes wrong
-        if (sessionData.audioUnblockSafetyTimeout) {
-          clearTimeout(sessionData.audioUnblockSafetyTimeout);
-        }
-        sessionData.audioUnblockSafetyTimeout = setTimeout(() => {
-          if (sessionData && sessionData.isResponding) {
-            console.warn('⚠️ [RealtimeWS] Safety timeout: Force unblocking audio after 30 seconds');
-            sessionData.isResponding = false;
-            sessionData.activeResponseId = null;
-            sessionData.audioUnblockSafetyTimeout = null;
-          }
-        }, 30000); // 30 second maximum
         
         // Schedule VAD config reversion after audio finishes playing
         sessionData.vadRevertTimeout = setTimeout(async () => {
@@ -2661,14 +2542,6 @@ Please call ${name} back at ${phone} to address their inquiry.
         clearTimeout(sessionData.vadRevertTimeout);
         sessionData.vadRevertTimeout = null;
       }
-      if (sessionData.audioUnblockTimeout) {
-        clearTimeout(sessionData.audioUnblockTimeout);
-        sessionData.audioUnblockTimeout = null;
-      }
-      if (sessionData.audioUnblockSafetyTimeout) {
-        clearTimeout(sessionData.audioUnblockSafetyTimeout);
-        sessionData.audioUnblockSafetyTimeout = null;
-      }
 
       // If this is a Twilio call, hang up the call legs
       if (sessionData.twilioCallSid && this.bridgeService) {
@@ -2683,11 +2556,6 @@ Please call ${name} back at ${phone} to address their inquiry.
       // Get session data before cleanup (needed for email/cleanup tasks)
       const session = this.stateManager.getSession(sessionId);
       const businessId = this.tenantContextManager ? this.tenantContextManager.getBusinessId(sessionId) : null;
-
-      // Clean up Krisp Viva session (skip for Twilio calls - they use TwilioBridgeService)
-      if (!sessionData.twilioCallSid) {
-        await this.krispViva.cleanupSession(sessionId);
-      }
 
       // Remove from sessions first to prevent close handler from triggering duplicate cleanup
       this.sessions.delete(sessionId);

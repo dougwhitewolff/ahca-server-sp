@@ -12,7 +12,7 @@ const {
 
 // Business-Specific Services
 const {
-  SuperiorFencingHandler
+  // SuperiorFencingHandler removed (legacy)
 } = require('./business');
 
 // Integration Services
@@ -23,7 +23,7 @@ const {
 
 // Real-time Services
 const {
-  RealtimeVADService,
+  // RealtimeVADService, // DEPRECATED - removed 2026-01-13
   RealtimeWebSocketService,
   TwilioBridgeService
 } = require('./realtime');
@@ -43,14 +43,14 @@ module.exports = {
   UserInfoCollector,
   
   // Business
-  SuperiorFencingHandler,
+  // SuperiorFencingHandler,
   
   // Integrations
   AppointmentFlowManager,
   EmergencyCallHandler,
   
   // Real-time
-  RealtimeVADService,
+  // RealtimeVADService, // DEPRECATED - removed 2026-01-13
   RealtimeWebSocketService,
   TwilioBridgeService,
   

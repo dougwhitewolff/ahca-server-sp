@@ -1,5 +1,5 @@
 const { TwilioBridgeService } = require('../services');
-const { realtimeWSService, krispVivaService } = require('./realtime-websocket');
+const { realtimeWSService } = require('./realtime-websocket');
 const { TenantContextManager } = require('../../../shared/services/TenantContextManager');
 
 let bridge; // initialized by setup function
@@ -9,7 +9,7 @@ const tenantContextManager = new TenantContextManager();
  * Setup Twilio Media Streams WebSocket server
  */
 function setupTwilioMediaWebSocket(wss) {
-  bridge = new TwilioBridgeService(realtimeWSService, krispVivaService);
+  bridge = new TwilioBridgeService(realtimeWSService);
 
   // Inject bridge into the realtime service to complete the interruption circuit
   realtimeWSService.setBridgeService(bridge);

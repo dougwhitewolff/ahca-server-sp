@@ -1,23 +1,34 @@
 const WebSocket = require('ws');
 const EventEmitter = require('events');
 const { performance } = require('perf_hooks');
-const { create, ConverterType } = require('@alexanderolsen/libsamplerate-js');
 const twilio = require('twilio');
-const { KrispVivaService } = require('./KrispVivaService');
+const { KrispService } = require('./KrispService');
 
 /**
- * TwilioBridgeService (Simplified)
- * Purpose: lossless format bridge only.
- * - Inbound: Twilio μ-law 8k → decode → upsample x3 (zero-order) → PCM16 24k → OpenAI
- * - Outbound: OpenAI PCM16 24k → downsample ÷3 (decimate) → μ-law 8k → Twilio
+ * TwilioBridgeService (with Krisp Noise Suppression)
+ * Purpose: Bridge Twilio audio to OpenAI Realtime API with advanced noise suppression
+ * - Inbound: Twilio μ-law 8k → decode → Krisp NC → encode → OpenAI
+ * - Outbound: OpenAI μ-law → Twilio
+ * 
+ * Audio Pipeline:
+ * 1. Decode μ-law to PCM16
+ * 2. Apply Krisp Noise Cancellation (removes background conversations)
+ * 3. Re-encode to μ-law
+ * 4. Forward to OpenAI (which has its own VAD for turn detection)
  */
 class TwilioBridgeService {
-  constructor(realtimeWSService, krispVivaService = null) {
+  constructor(realtimeWSService) {
     this.realtimeWSService = realtimeWSService;
     this.callSidToSession = new Map();
     
-    // Initialize Krisp Viva service (create if not provided)
-    this.krispViva = krispVivaService || new KrispVivaService();
+    // Initialize Krisp noise suppression service
+    this.krispService = new KrispService();
+    
+    if (this.krispService.enabled) {
+      console.log('🎤 [TwilioBridge] Krisp noise suppression enabled');
+    } else {
+      console.log('🎤 [TwilioBridge] Krisp disabled - audio will be passed through directly');
+    }
     
     if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
       this.twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
@@ -31,6 +42,7 @@ class TwilioBridgeService {
     this._inboundPacketCount = 0;
   }
 
+
   async start(callSid, twilioWs, streamSid, businessId, fromPhone = null, toPhone = null, baseUrl = null, returnFromTransfer = false, staffName = null) {
     const sessionId = `twilio-${callSid}`;
 
@@ -42,6 +54,11 @@ class TwilioBridgeService {
         // eslint-disable-next-line no-console
         console.warn('⚠️ [TwilioBridge] Failed to set tenant context:', e.message);
       }
+    }
+
+    // Initialize Krisp session for this call
+    if (this.krispService.enabled) {
+      await this.krispService.createSession(sessionId);
     }
 
     // This is a mocked WebSocket-like object that pipes messages to the bridge's onAgentMessage
@@ -67,7 +84,10 @@ class TwilioBridgeService {
     // Persist caller/callee phone numbers into session user info for later SMS
     try {
       if (fromPhone && this.realtimeWSService && this.realtimeWSService.stateManager) {
-        this.realtimeWSService.stateManager.updateUserInfo(sessionId, { phone: fromPhone });
+        // We do NOT update the session with the caller's phone number automatically
+        // This forces the agent to explicitly ask for the phone number
+        // this.realtimeWSService.stateManager.updateUserInfo(sessionId, { phone: fromPhone });
+        console.log(`📞 [TwilioBridge] Not auto-populating session with caller phone: ${fromPhone}`);
       }
       if (toPhone && this.realtimeWSService && this.realtimeWSService.stateManager) {
         this.realtimeWSService.stateManager.updateSession(sessionId, { businessLine: toPhone });
@@ -77,15 +97,7 @@ class TwilioBridgeService {
       console.warn('⚠️ [TwilioBridge] Failed to persist phone metadata:', e.message);
     }
 
-    // Create persistent resamplers for this call to avoid creating/destroying them for every audio chunk
-    console.log('🔧 [TwilioBridge] Creating persistent resamplers for call:', callSid);
-    // const resamplerInbound = await create(1, 8000, 16000, {
-    //   converterType: ConverterType.SRC_SINC_BEST_QUALITY
-    // });
-    // const resamplerOutbound = await create(1, 24000, 8000, {
-    //   converterType: ConverterType.SRC_SINC_BEST_QUALITY
-    // });
-
+    // Create session entry
     this.callSidToSession.set(callSid, {
       sessionId,
       streamSid,
@@ -93,13 +105,8 @@ class TwilioBridgeService {
       baseUrl: baseUrl || null, // Store base URL for emergency transfers
       outMuLawRemainder: Buffer.alloc(0),
       outputBuffer: [], // Buffer for outbound audio
-      isFlushing: false, // Prevent multiple flush loops
-      // resamplerInbound, // Persistent resampler: 8kHz -> 16kHz
-      // resamplerOutbound, // Persistent resampler: 24kHz -> 8kHz
+      isFlushing: false // Prevent multiple flush loops
     });
-
-    // Initialize Krisp Viva for this session (Twilio audio is 8kHz)
-    await this.krispViva.initializeSession(sessionId, 8000);
 
     return sessionId;
   }
@@ -107,27 +114,11 @@ class TwilioBridgeService {
   async stop(callSid) {
     const entry = this.callSidToSession.get(callSid);
     if (entry) {
-      // Destroy persistent resamplers
-      // if (entry.resamplerInbound) {
-      //   try {
-      //     entry.resamplerInbound.destroy();
-      //     console.log('🔧 [TwilioBridge] Destroyed inbound resampler for call:', callSid);
-      //   } catch (e) {
-      //     console.warn('⚠️ [TwilioBridge] Failed to destroy inbound resampler:', e.message);
-      //   }
-      // }
-      // if (entry.resamplerOutbound) {
-      //   try {
-      //     entry.resamplerOutbound.destroy();
-      //     console.log('🔧 [TwilioBridge] Destroyed outbound resampler for call:', callSid);
-      //   } catch (e) {
-      //     console.warn('⚠️ [TwilioBridge] Failed to destroy outbound resampler:', e.message);
-      //   }
-      // }
-
-      // Clean up Krisp Viva session
-      await this.krispViva.cleanupSession(entry.sessionId);
-
+      // Clean up Krisp session
+      if (this.krispService.enabled) {
+        await this.krispService.cleanup(entry.sessionId);
+      }
+      
       await this.realtimeWSService.closeSession(entry.sessionId);
       this.callSidToSession.delete(callSid);
     }
@@ -161,60 +152,35 @@ class TwilioBridgeService {
       const sessionData = this.realtimeWSService.sessions.get(entry.sessionId);
       if (!sessionData) return;
 
-      // Decode μ-law to PCM for processing
-      const muLawBuf = Buffer.from(payloadBase64, 'base64');
-      const pcm = this.decodeMuLawToPCM16(muLawBuf);
+      // If Krisp is enabled, process audio through noise cancellation pipeline
+      if (this.krispService.enabled) {
+        // Step 1: Decode μ-law to PCM16
+        const muLawBuf = Buffer.from(payloadBase64, 'base64');
+        const pcm16 = this.decodeMuLawToPCM16(muLawBuf);
 
-      // Process through Krisp Viva (noise suppression + VAD)
-      const result = await this.krispViva.processAudio(entry.sessionId, pcm, 8000);
+        // Step 2: Apply Krisp noise cancellation
+        const denoisedPcm = this.krispService.processAudio(entry.sessionId, pcm16);
 
-      // Use processed audio from Krisp Viva (noise suppression already applied)
-      const processedPcm = result.processedAudio;
-      
-      // Re-encode to μ-law
-      const muLaw = this.encodePCM16ToMuLaw(processedPcm);
-      const base64 = muLaw.toString('base64');
-      
-      // Send processed audio to OpenAI
-      this.realtimeWSService.handleClientMessage(sessionData, {
-        type: 'audio',
-        data: base64
-      });
+        // Step 3: Re-encode to μ-law
+        const cleanMuLaw = this.encodePCM16ToMuLaw(denoisedPcm);
+        const cleanBase64 = cleanMuLaw.toString('base64');
+
+        // Step 4: Forward to OpenAI
+        this.realtimeWSService.handleClientMessage(sessionData, {
+          type: 'audio',
+          data: cleanBase64
+        });
+      } else {
+        // Krisp disabled - direct passthrough
+        this.realtimeWSService.handleClientMessage(sessionData, {
+          type: 'audio',
+          data: payloadBase64
+        });
+      }
     } catch (e) {
       // Swallow to keep real-time path resilient
       // eslint-disable-next-line no-console
       console.warn('⚠️ [TwilioBridge] Inbound media handling error:', e.message);
-    }
-  }
-
-
-  /**
-   * Resample PCM audio data using a persistent resampler instance
-   * @param {Int16Array} pcmData - Input PCM data
-   * @param {Object} resampler - Persistent resampler instance
-   * @returns {Int16Array} Resampled PCM data
-   */
-  resamplePcm(pcmData, resampler) {
-    try {
-      // libsamplerate.js expects Float32Array data between -1.0 and 1.0
-      const float32Data = new Float32Array(pcmData.length);
-      for (let i = 0; i < pcmData.length; i++) {
-        float32Data[i] = pcmData[i] / 32768;
-      }
-
-      const resampledData = resampler.simple(float32Data);
-
-      // Convert back to Int16Array
-      const int16Data = new Int16Array(resampledData.length);
-      for (let i = 0; i < resampledData.length; i++) {
-        int16Data[i] = Math.max(-32768, Math.min(32767, Math.floor(resampledData[i] * 32768)));
-      }
-
-      return int16Data;
-    } catch (e) {
-      console.error('❌ [TwilioBridge] Resampling error:', e.message);
-      // Fallback to original data to avoid crashing the stream
-      return pcmData;
     }
   }
 
@@ -232,11 +198,7 @@ class TwilioBridgeService {
             const entry = this.callSidToSession.get(callSid);
             if (!entry) return;
 
-            // Direct passthrough for G.711 u-law
-            // const pcm24k = this.base64ToInt16(msg.delta);
-            // const pcm8k = this.resamplePcm(pcm24k, entry.resamplerOutbound);
-            // const muLaw = this.encodePCM16ToMuLaw(pcm8k);
-
+            // Direct passthrough for G.711 μ-law (no resampling needed)
             const muLaw = Buffer.from(msg.delta, 'base64');
 
             // 4) prepend any remainder and chunk into 160-byte frames (20ms @ 8kHz)
@@ -328,9 +290,15 @@ class TwilioBridgeService {
   }
 
   encodePCM16ToMuLaw(pcm) {
-    const out = Buffer.alloc(pcm.length);
-    for (let i = 0; i < pcm.length; i++) {
-      out[i] = this.muLawEncodeSample(pcm[i]);
+    // pcm is a Buffer of 16-bit little-endian samples
+    // Output should be half the size (8-bit samples)
+    const out = Buffer.alloc(pcm.length / 2);
+    
+    for (let i = 0; i < pcm.length; i += 2) {
+      // Read 16-bit signed integer (Little Endian)
+      const sample = pcm.readInt16LE(i);
+      // Encode to 8-bit µ-law
+      out[i / 2] = this.muLawEncodeSample(sample);
     }
     return out;
   }
@@ -366,55 +334,6 @@ class TwilioBridgeService {
     let mantissa = (s >> ((exponent === 0) ? 4 : (exponent + 3))) & 0x0f;
     let uVal = ~(sign | (exponent << 4) | mantissa) & 0xff;
     return uVal;
-  }
-
-  /**
-   * Upsample 8kHz PCM to 24kHz by duplicating samples
-   * @param {Int16Array} pcm8k - 8kHz PCM data
-   * @returns {Int16Array} 24kHz PCM data
-   * @deprecated Replaced by resamplePcm with libsamplerate.js
-   */
-  upsample8kTo24k(pcm8k) {
-    const pcm24k = new Int16Array(pcm8k.length * 3);
-    for (let i = 0, j = 0; i < pcm8k.length; i++) {
-      const v = pcm8k[i];
-      pcm24k[j++] = v;
-      pcm24k[j++] = v;
-      pcm24k[j++] = v;
-    }
-    return pcm24k;
-  }
-
-  downsample24kTo8k(pcm24k) {
-    const len = Math.floor(pcm24k.length / 3);
-    const out = new Int16Array(len);
-    for (let i = 0, j = 0; j < len; j++) {
-      // Average groups of 3 to reduce aliasing a bit
-      const a = pcm24k[i++];
-      const b = pcm24k[i++];
-      const c = pcm24k[i++];
-      let avg = Math.round((a + b + c) / 3);
-      if (avg > 32767) avg = 32767;
-      if (avg < -32768) avg = -32768;
-      out[j] = avg;
-    }
-    return out;
-  }
-
-  /**
-   * Encodes Int16 PCM audio data into a base64 string.
-   * This is used to prepare audio for transmission over WebSocket.
-   * @param {Int16Array} pcm16Array - The PCM data to encode.
-   * @returns {string} The base64-encoded audio data.
-   */
-  int16ToBase64(pcm16Array) {
-    const pcm16Bytes = new Uint8Array(pcm16Array.buffer);
-    return Buffer.from(pcm16Bytes).toString('base64');
-  }
-
-  base64ToInt16(b64) {
-    const buf = Buffer.from(b64, 'base64');
-    return new Int16Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 2));
   }
 
   /**

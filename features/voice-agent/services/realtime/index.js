@@ -1,16 +1,14 @@
 /**
  * Real-time Communication Services
- * WebSocket, VAD, and real-time processing services
+ * WebSocket and real-time audio processing services
  */
 
-const { RealtimeVADService } = require('./RealtimeVADService');
 const { RealtimeWebSocketService } = require('./RealtimeWebSocketService');
 const { TwilioBridgeService } = require('./TwilioBridgeService');
-const { KrispVivaService } = require('./KrispVivaService');
+const { KrispService } = require('./KrispService');
 
 module.exports = {
-  RealtimeVADService,
   RealtimeWebSocketService,
   TwilioBridgeService,
-  KrispVivaService
+  KrispService
 };

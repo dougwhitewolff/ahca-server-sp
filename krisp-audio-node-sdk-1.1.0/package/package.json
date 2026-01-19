@@ -1,0 +1,17 @@
+{
+	"name": "krisp-audio-node-sdk-test-app",
+	"version": "1.0.0",
+	"description": "WAV processing test app for Node SDK",
+	"type": "commonjs",
+	"dependencies": {
+		"commander": "^12.1.0",
+		"krisp-audio-node-sdk": "^1.1.0",
+		"wavefile": "^11.0.0"
+	},
+		"bin": {
+		"krisp-wav-process": "./wav-process.js"
+	},
+	"engines": {
+		"node": ">=18.0.0"
+	}
+}
