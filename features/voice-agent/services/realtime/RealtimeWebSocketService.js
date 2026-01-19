@@ -28,6 +28,11 @@ class RealtimeWebSocketService extends EventEmitter {
     // Active sessions: sessionId -> { clientWs, openaiWs, state }
     this.sessions = new Map();
 
+    // Barge-in configuration (default: disabled)
+    // Set ENABLE_BARGE_IN=true to allow users to interrupt agent responses
+    this.enableBargeIn = process.env.ENABLE_BARGE_IN  || false;
+    console.log(`🔧 [RealtimeWS] Barge-in enabled: ${this.enableBargeIn}`);
+
     // Default system prompt (fallback)
     try {
       const prompts = require('../../../configs/prompt_rules.json');
@@ -842,11 +847,32 @@ IMPORTANT: This sends SMS + Email notifications to April and the intended staff 
 
     switch (message.type) {
       case 'audio':
-        // [BARGE-IN ENABLED] Removed audio blocking
-        // We now allow audio to pass through even when agent is responding
-        // The VAD will handle interruption (speech_started -> response.cancel)
+        // Block audio input while agent is responding (uninterruptable mode)
+        // Only block if BOTH conditions are true (defensive check)
+        // Also ensure we're not blocking if state is inconsistent (safety fallback)
+        const shouldBlock = !this.enableBargeIn && 
+                          sessionData.isResponding === true && 
+                          sessionData.activeResponseId !== null && 
+                          sessionData.activeResponseId !== undefined;
         
-        // Apply Cobra VAD to filter audio (only for web clients, not Twilio)
+        if (shouldBlock) {
+          // Silently drop audio - don't forward to OpenAI
+          // This prevents any transcription of speech during agent response
+          // Only log occasionally to avoid spam (every 100th packet or so)
+          if (Math.random() < 0.01) {
+            console.log('🔇 [RealtimeWS] Blocking audio input - agent is responding (isResponding:', sessionData.isResponding, 'activeResponseId:', sessionData.activeResponseId, ')');
+          }
+          return;
+        }
+        
+        // Safety: Log if we're in an unexpected state (for debugging)
+        if (sessionData.isResponding === true && sessionData.activeResponseId === null) {
+          if (Math.random() < 0.001) {
+            console.warn('⚠️ [RealtimeWS] Inconsistent state: isResponding=true but activeResponseId=null. Allowing audio anyway.');
+          }
+        }
+        
+        // Apply Krisp Viva to process audio (only for web clients, not Twilio)
         // Twilio calls are handled by TwilioBridgeService
         if (!sessionData.twilioCallSid) {
           try {
@@ -854,7 +880,9 @@ IMPORTANT: This sends SMS + Email notifications to April and the intended staff 
             const audioBuffer = Buffer.from(message.data, 'base64');
             const pcm16 = new Int16Array(audioBuffer.buffer, audioBuffer.byteOffset, audioBuffer.length / 2);
             
-            // Note: Audio processing (noise suppression) is handled by TwilioBridgeService for phone calls
+            // Process through Krisp Viva (noise suppression + VAD, web clients use 24kHz)
+            // Note: If Krisp Viva is not available, this will pass through
+            // Audio processing (noise suppression) is handled by TwilioBridgeService for phone calls
             // Web clients connect directly and OpenAI has built-in noise reduction
           } catch (error) {
             // On error, pass through audio to maintain service availability
@@ -862,7 +890,7 @@ IMPORTANT: This sends SMS + Email notifications to April and the intended staff 
           }
         }
         
-        // Forward audio to OpenAI (barge-in enabled)
+        // Forward audio to OpenAI only when agent is not responding (or barge-in is enabled)
         if (openaiWs.readyState === WebSocket.OPEN) {
           openaiWs.send(JSON.stringify({
             type: 'input_audio_buffer.append',
@@ -877,9 +905,13 @@ IMPORTANT: This sends SMS + Email notifications to April and the intended staff 
         break;
 
       case 'input_audio_buffer.commit':
-        // [BARGE-IN ENABLED] Removed blocking commit
+        // Block commit while agent is responding (if barge-in is disabled)
+        if (!this.enableBargeIn && sessionData.isResponding && sessionData.activeResponseId) {
+          // Silently drop commit - prevents processing any buffered audio
+          return;
+        }
         
-        // Commit audio buffer (barge-in enabled)
+        // Commit audio buffer only when agent is not responding (or barge-in is enabled)
         if (openaiWs.readyState === WebSocket.OPEN) {
           openaiWs.send(JSON.stringify({
             type: 'input_audio_buffer.commit'
@@ -936,6 +968,12 @@ IMPORTANT: This sends SMS + Email notifications to April and the intended staff 
             sessionData.openaiWs.send(JSON.stringify({
               type: 'response.cancel'
             }));
+            
+            // Clear audio blocking timeout if it exists (response was cancelled, so no need to wait)
+            if (sessionData.audioBlockingTimeout) {
+              clearTimeout(sessionData.audioBlockingTimeout);
+              sessionData.audioBlockingTimeout = null;
+            }
             
             // Mark that we're interrupting
             sessionData.isResponding = false;
@@ -1090,15 +1128,32 @@ IMPORTANT: This sends SMS + Email notifications to April and the intended staff 
         
         console.log(`⏱️ [RealtimeWS] Estimated audio duration: ${estimatedDurationMs}ms for transcript (${transcript.length} chars)`);
         
-        // Immediately clear response state - audio input is ALWAYS enabled (barge-in support)
-        sessionData.isResponding = false;
-        sessionData.activeResponseId = null;
-        sessionData.suppressAudio = false;
-        
-        // Clear any existing VAD revert timeout
+        // Clear any existing timeouts
         if (sessionData.vadRevertTimeout) {
           clearTimeout(sessionData.vadRevertTimeout);
         }
+        if (sessionData.audioBlockingTimeout) {
+          clearTimeout(sessionData.audioBlockingTimeout);
+        }
+        
+        // If barge-in is disabled, keep blocking audio until playback finishes
+        // Otherwise, immediately clear response state to allow interruptions
+        if (!this.enableBargeIn) {
+          // Schedule clearing of response state after audio finishes playing
+          // This uses the same estimated time mechanism as VAD config reversion
+          sessionData.audioBlockingTimeout = setTimeout(() => {
+            console.log('🔄 [RealtimeWS] Clearing audio blocking after estimated playback duration');
+            sessionData.isResponding = false;
+            sessionData.activeResponseId = null;
+            sessionData.audioBlockingTimeout = null;
+          }, estimatedDurationMs);
+        } else {
+          // Barge-in enabled: immediately clear response state to allow interruptions
+          sessionData.isResponding = false;
+          sessionData.activeResponseId = null;
+        }
+        
+        sessionData.suppressAudio = false;
         
         // Schedule VAD config reversion after audio finishes playing
         sessionData.vadRevertTimeout = setTimeout(async () => {
@@ -2541,6 +2596,10 @@ Please call ${name} back at ${phone} to address their inquiry.
       if (sessionData.vadRevertTimeout) {
         clearTimeout(sessionData.vadRevertTimeout);
         sessionData.vadRevertTimeout = null;
+      }
+      if (sessionData.audioBlockingTimeout) {
+        clearTimeout(sessionData.audioBlockingTimeout);
+        sessionData.audioBlockingTimeout = null;
       }
 
       // If this is a Twilio call, hang up the call legs
