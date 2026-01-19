@@ -42,7 +42,7 @@ class RealtimeWebSocketService extends EventEmitter {
       normal: {
         threshold: 0.6,
         prefix_padding_ms: 300,
-        silence_duration_ms: 800,
+        silence_duration_ms: 900,
         create_response: true,
         interrupt_response: false
       },
@@ -50,7 +50,7 @@ class RealtimeWebSocketService extends EventEmitter {
       assistantSpeaking: {
         threshold: 0.7,                  // Lower threshold to allow interruption
         prefix_padding_ms: 300,
-        silence_duration_ms: 800,        
+        silence_duration_ms: 900,        
         create_response: true,
         interrupt_response: true
       }
