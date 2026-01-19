@@ -37,6 +37,9 @@ class TwilioBridgeService {
       // eslint-disable-next-line no-console
       console.warn('⚠️ [TwilioBridge] Twilio client not initialized. TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN are required for call control features.');
     }
+
+    // Debug counters for inbound audio
+    this._inboundPacketCount = 0;
   }
 
 
@@ -141,6 +144,11 @@ class TwilioBridgeService {
     if (!entry || !payloadBase64) return;
 
     try {
+      this._inboundPacketCount++;
+      if (this._inboundPacketCount % 200 === 0) {
+        console.log(`🎧 [TwilioBridge] Inbound audio packets: ${this._inboundPacketCount} (callSid: ${callSid})`);
+      }
+
       const sessionData = this.realtimeWSService.sessions.get(entry.sessionId);
       if (!sessionData) return;
 

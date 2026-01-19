@@ -232,11 +232,11 @@ class NourishOregonHandler {
     // Check if after hours
     if (this.isAfterHours()) {
       return businessConfig?.promptConfig?.afterHoursGreeting || 
-        "Thanks for calling Nourish Oregon. We're currently closed. Our drive-up hours are Monday and Tuesday from 4 to 7 PM, and Thursday from 10 AM to 1 PM. Walk-up hours are Tuesday from 4 to 7 PM and Thursday from 10 AM to 1 PM. You can also place online orders at nourishoregon.com. Please call back during our hours, or leave your name and number and we'll get back to you.";
+        "Thanks for calling Nourish Oregon. We're currently closed. Our drive-up hours are Monday and Tuesday from 4 to 7 PM, and Thursday from 10 AM to 1 PM. Walk-up hours are Tuesday from 4 to 7 PM and Thursday from 10 AM to 1 PM. You can also place online drive-up orders at nourishoregon.com. Please call back during our hours, or leave your name and number and we'll get back to you.";
     }
     
     return businessConfig?.promptConfig?.greeting || 
-      "Thanks for calling Nourish Oregon. This is Jacob, Nourish Oregon's virtual assistant. This call may be recorded for improving our services. I'll make sure you reach the right person to help you. Feel free to ask me any questions—if I can't help, I'll connect you with someone who can. What can I help you with today?";
+      "Thanks for calling Nourish Oregon. This is Jacob, Nourish Oregon's virtual assistant. This call is recorded for quality and service purposes. By continuing, you consent. I'll make sure you reach the right person to help you. Feel free to ask me any questions—if I can't help, I'll connect you with someone who can. What can I help you with today?";
   }
 
   /**
@@ -341,7 +341,7 @@ class NourishOregonHandler {
     if (questionLower.includes('hour') || questionLower.includes('time') || questionLower.includes('when') && questionLower.includes('open')) {
       return {
         success: true,
-        response: "Our drive-up hours are Monday and Tuesday from 4 to 7 PM, and Thursday from 10 AM to 1 PM. Walk-up hours are Tuesday from 4 to 7 PM and Thursday from 10 AM to 1 PM. You can also place online orders anytime at nourishoregon.com."
+        response: "Our drive-up hours are Monday and Tuesday from 4 to 7 PM, and Thursday from 10 AM to 1 PM. Walk-up hours are Tuesday from 4 to 7 PM and Thursday from 10 AM to 1 PM. You can also place online drive-up orders anytime at nourishoregon.com."
       };
     }
     
@@ -349,7 +349,7 @@ class NourishOregonHandler {
     if (questionLower.includes('income') || questionLower.includes('qualify') || questionLower.includes('eligible')) {
       return {
         success: true,
-        response: "We're glad you called! There are no income requirements to receive food from Nourish Oregon. We're here to help everyone in Oregon and Southeast Washington who needs food assistance."
+        response: "There are no income requirements to receive food from Nourish Oregon. We serve everyone in Oregon and Southeast Washington who needs food assistance."
       };
     }
     
@@ -357,7 +357,7 @@ class NourishOregonHandler {
     if (questionLower.includes('id') || questionLower.includes('identification') || questionLower.includes('show') || questionLower.includes('bring')) {
       return {
         success: true,
-        response: "You don't need to show any identification. We encourage you to bring your own bags if you can, but that's not required either. We're here to help!"
+        response: "You don't need to show any identification. We encourage you to bring your own bags if you can, but that's not required either."
       };
     }
     
@@ -365,23 +365,17 @@ class NourishOregonHandler {
     if (questionLower.includes('service') || questionLower.includes('what do you') || questionLower.includes('what can')) {
       return {
         success: true,
-        response: "We offer drive-up food pickup, walk-up pickup, and food delivery service. You can place online orders at nourishoregon.com. We also have rental and utility assistance through our HRSN program, and we partner with Doernbecher Children's Hospital."
+        response: "We offer drive-up food pickup and walk-up pickup. You can place online drive-up orders at nourishoregon.com. We also partner with Doernbecher Children's Hospital to provide additional support."
       };
     }
     
-    // Pickup to delivery change
-    if (questionLower.includes('change') && (questionLower.includes('pickup') || questionLower.includes('pick up')) && questionLower.includes('delivery')) {
-      return {
-        success: true,
-        response: "I'm sorry, we're not able to change pickup orders to delivery. If you need delivery service, you'll need to place a new delivery request. Would you like me to connect you with someone who can help you with that?"
-      };
-    }
+    // Note: Removed pickup to delivery change question - not applicable since we don't offer delivery to clients
     
     // Website
     if (questionLower.includes('website') || questionLower.includes('online')) {
       return {
         success: true,
-        response: "You can visit our website at nourishoregon.com to place online drive-up orders and learn more about our services."
+        response: "You can visit our website at nourishoregon.com to place online drive-up orders and learn more about our services. Remember, online orders are only available for drive-up pickup."
       };
     }
     

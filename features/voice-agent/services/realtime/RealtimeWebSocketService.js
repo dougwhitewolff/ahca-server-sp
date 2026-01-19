@@ -2201,8 +2201,9 @@ IMPORTANT: This sends SMS + Email notifications to April and the intended staff 
 
       // Add delay before actual call transfer to allow Jacob's message to play completely
       // Message: "Let me connect you with [Name] who can help you with that" (~3-4 seconds)
-      console.log('⏰ [RouteCall] Waiting 3.5 seconds for transfer message to complete...');
-      await new Promise(resolve => setTimeout(resolve, 3500));
+      // 4.5 seconds to prevent cutoffs with network latency
+      console.log('⏰ [RouteCall] Waiting 4.5 seconds for transfer message to complete...');
+      await new Promise(resolve => setTimeout(resolve, 4500));
 
       // Trigger call forward using Twilio REST API
       const forwardSuccess = await this.callForwardingHandler.redirectCallToStaff(
