@@ -768,9 +768,9 @@ IMPORTANT: This sends SMS + Email notifications to April and the intended staff 
           }
         }
       },
-        {
-          type: 'function',
-          name: 'end_conversation',
+      {
+        type: 'function',
+        name: 'end_conversation',
           description: '🚨 CRITICAL REQUIREMENTS BEFORE CALLING THIS FUNCTION:\n1. You MUST have collected ALL required information: name (confirmed), reason, and phone number\n2. You MUST have asked "Is there anything else I can help you with?" or similar\n3. The user MUST confirm they are done (e.g., says "no", "that\'s all", "nothing else", "I\'m good", "no thanks", etc.)\n\nABSOLUTE PROHIBITION: Do NOT call this function if:\n- Name is not collected or not confirmed\n- Reason is not collected\n- Phone number is not collected\n- The user just says "thanks" or "goodbye" without first asking if they need anything else\n\nIf this function returns an error about missing information, you MUST collect the missing information before attempting to end the conversation again.',
         parameters: {
           type: 'object',
@@ -2524,6 +2524,9 @@ Please call ${name} back at ${phone} to address their inquiry.
         hasPhone = userInfo.phone && userInfo.phone !== 'client:Anonymous' && userInfo.phone.trim() !== '' && userInfo.phoneConfirmed;
       }
 
+      // NOTE: Do NOT check fallback phone here - only check after call has actually ended
+      // This ensures the agent is forced to collect the phone number during the conversation
+
       const missingInfo = [];
       if (!hasName) missingInfo.push('name');
       if (!hasReason) missingInfo.push('reason');
@@ -2631,6 +2634,45 @@ Please call ${name} back at ${phone} to address their inquiry.
       }
 
       // Now do cleanup tasks (email, state cleanup) - these can happen after connections are closed
+      
+      // FALLBACK: After call has ended, check if phone is missing and use Twilio fallback
+      // This is the ONLY place we check the fallback - agent cannot access it during conversation
+      if (session && session.userInfo) {
+        const hasPhone = session.userInfo.phone && 
+                        session.userInfo.phone !== 'client:Anonymous' && 
+                        session.userInfo.phone.trim() !== '';
+        
+        if (!hasPhone && session._twilioFallbackPhone) {
+          console.log(`📞 [CloseSession] Call ended - phone missing, using Twilio fallback: ${session._twilioFallbackPhone}`);
+          // Format and store the fallback phone
+          const fallbackFormatted = session._twilioFallbackPhone.replace(/\D/g, ''); // Remove non-digits
+          let formattedPhone = null;
+          
+          if (fallbackFormatted.length === 11 && fallbackFormatted.startsWith('1')) {
+            // Format as XXX XXX XXXX
+            const areaCode = fallbackFormatted.substring(1, 4);
+            const exchange = fallbackFormatted.substring(4, 7);
+            const number = fallbackFormatted.substring(7, 11);
+            formattedPhone = `${areaCode} ${exchange} ${number}`;
+          } else if (fallbackFormatted.length === 10) {
+            // Format as XXX XXX XXXX
+            const areaCode = fallbackFormatted.substring(0, 3);
+            const exchange = fallbackFormatted.substring(3, 6);
+            const number = fallbackFormatted.substring(6, 10);
+            formattedPhone = `${areaCode} ${exchange} ${number}`;
+          }
+          
+          if (formattedPhone) {
+            this.stateManager.updateUserInfo(sessionId, { 
+              phone: formattedPhone,
+              phoneConfirmed: true,
+              phoneFromCallerId: true // Flag to indicate this came from Twilio fallback
+            });
+            console.log(`✅ [CloseSession] Set phone from Twilio fallback: ${formattedPhone}`);
+          }
+        }
+      }
+      
       // Send conversation summary email
       // Only send if user info was collected or if it's Superior Fencing (fixed email)
       if (session && (session.userInfo?.collected || businessId === 'superior-fencing')) {

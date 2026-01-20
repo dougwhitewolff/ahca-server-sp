@@ -733,11 +733,17 @@ Does this look good, or would you like to change anything else?`;
       // Handle Superior Fencing with fixed email
       if (businessId === 'superior-fencing') {
         console.log('📧 [Email] Using fixed email for Superior Fencing');
+        
+        // Get phone number - should already be set (either from user or from fallback in closeSession)
+        let phoneNumber = (session.userInfo && session.userInfo.phone) || null;
+        let phoneFromCallerId = session.userInfo?.phoneFromCallerId || false;
+        
         // Create user info with fixed email for Superior Fencing
         const fixedUserInfo = {
           name: (session.userInfo && session.userInfo.name) || 'Superior Fencing Customer',
-          email: 'doug@sherpaprompt.com', // change this to Superior Fencing's email
-          phone: (session.userInfo && session.userInfo.phone) || null,
+          email: 'faiyazrahman1685@gmail.com', // change this to Superior Fencing's email
+          phone: phoneNumber,
+          phoneFromCallerId: phoneFromCallerId,
           reason: (session.userInfo && session.userInfo.reason) || null,
           urgency: (session.userInfo && session.userInfo.urgency) || null,
           collected: true

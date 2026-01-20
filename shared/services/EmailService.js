@@ -876,10 +876,15 @@ Guidelines:
         
         // Try multiple methods to get phone number
         let customerPhone = 'Not provided';
+        let phoneSource = ''; // Track where phone came from
         
         // Method 1: Check if phone is in userInfo (from function calls)
         if (userInfo && userInfo.phone) {
           customerPhone = userInfo.phone;
+          // Check if phone came from caller ID (fallback)
+          if (userInfo.phoneFromCallerId) {
+            phoneSource = ' (from caller ID)';
+          }
         } else {
           // Method 2: Extract from conversation history
           customerPhone = this.extractPhoneFromHistory(conversationHistory) || 'Not provided';
@@ -922,7 +927,7 @@ Guidelines:
         <h3>Call Details</h3>
         <ul>
             <li><strong>Name:</strong> ${customerName}</li>
-            <li><strong>Phone:</strong> ${customerPhone}</li>
+            <li><strong>Phone:</strong> ${customerPhone}${phoneSource}</li>
             <li><strong>Reason:</strong> ${customerReason}</li>
         </ul>
     </div>
@@ -937,7 +942,7 @@ New Customer Inquiry
 
 Call Details
 • Name: ${customerName}
-• Phone: ${customerPhone}
+• Phone: ${customerPhone}${phoneSource}
 • Reason: ${customerReason}
         `.trim();
 

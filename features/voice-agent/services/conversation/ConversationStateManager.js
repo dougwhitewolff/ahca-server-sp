@@ -20,6 +20,7 @@ class ConversationStateManager {
         userInfo: { name: null, email: null, collected: false }, // Start with collected=false to properly collect user info first
         appointmentFlow: { active: false, step: 'none', details: {}, calendarType: null },
         awaitingFollowUp: false,
+        _twilioFallbackPhone: null, // INTERNAL: Twilio caller ID stored as fallback - NOT accessible to agent, only used after call ends
         createdAt: new Date()
       });
     }
