@@ -11,7 +11,17 @@
     "basicInfoCollection": true,
     "callForwarding": true,
     "voicemailHandling": true,
-    "afterHoursGreeting": true
+    "afterHoursGreeting": true,
+    "onlyAnswerDuringBusinessHours": true
+  },
+  
+  "operatingHours": {
+    "timezone": "America/Los_Angeles",
+    "schedule": {
+      "monday": [{ "start": "16:00", "end": "19:00" }],
+      "tuesday": [{ "start": "16:00", "end": "19:00" }],
+      "thursday": [{ "start": "10:00", "end": "13:00" }]
+    }
   },
   
   "database": {
@@ -121,7 +131,7 @@
     "agentPersonality": "warm and personal",
     "agentType": "virtual assistant",
     "greeting": "Thanks for calling Nourish Oregon. This is Jacob, Nourish Oregon's virtual assistant. This is an automated service. This call is recorded and processed to assist the business you're calling. By continuing, you consent. I'll make sure you reach the right person to help you. Feel free to ask me any questions—if I can't help, I'll connect you with someone who can. What can I help you with today?",
-    "afterHoursGreeting": "Thanks for calling Nourish Oregon. We're currently closed. Our drive-up hours are Monday and Tuesday from 4 to 7 PM, and Thursday from 10 AM to 1 PM. Walk-up hours are Tuesday from 4 to 7 PM and Thursday from 10 AM to 1 PM. You can also place online drive-up orders at nourishoregon.com. Please call back during our hours, or leave your name and number and we'll get back to you."
+    "afterHoursGreeting": "Thanks for calling Nourish Oregon. We're currently closed. Our drive-up hours are Monday and Tuesday from 4 to 7 PM, and Thursday from 10 AM to 1 PM. Walk-up hours are Tuesday from 4 to 7 PM and Thursday from 10 AM to 1 PM. You can also place online drive-up orders at nourishoregon.com. Please call back during those hours. Thank you."
   },
   
   "agent": {

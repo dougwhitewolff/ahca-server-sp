@@ -8,3 +8,4 @@ npm-debug.log
 coverage/
 *.local
 *.wav
+VOICE_AGENT_ARCHITECTURE.md

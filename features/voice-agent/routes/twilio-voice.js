@@ -7,6 +7,50 @@ const { BusinessConfigService } = require('../../../shared/services/BusinessConf
 const businessConfigService = new BusinessConfigService();
 
 /**
+ * Check if current time is within business operating hours
+ * @param {Object} operatingHours - Operating hours config with timezone and schedule
+ * @returns {boolean} True if business is open, false otherwise
+ */
+function checkBusinessHours(operatingHours) {
+  if (!operatingHours || !operatingHours.schedule) {
+    return true; // If no hours configured, assume always open
+  }
+
+  const timezone = operatingHours.timezone || 'America/Los_Angeles';
+  const now = new Date();
+  const localTime = new Date(now.toLocaleString("en-US", { timeZone: timezone }));
+  
+  const dayOfWeek = localTime.getDay(); // 0 = Sunday, 1 = Monday, etc.
+  const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  const dayName = dayNames[dayOfWeek];
+  
+  const currentHour = localTime.getHours();
+  const currentMinute = localTime.getMinutes();
+  const currentTimeInMinutes = currentHour * 60 + currentMinute;
+  
+  // Check if there's a schedule for today
+  const todaySchedule = operatingHours.schedule[dayName];
+  if (!todaySchedule || todaySchedule.length === 0) {
+    return false; // No schedule for today means closed
+  }
+  
+  // Check if current time falls within any of today's time slots
+  for (const slot of todaySchedule) {
+    const [startHour, startMin] = slot.start.split(':').map(Number);
+    const [endHour, endMin] = slot.end.split(':').map(Number);
+    
+    const startTimeInMinutes = startHour * 60 + startMin;
+    const endTimeInMinutes = endHour * 60 + endMin;
+    
+    if (currentTimeInMinutes >= startTimeInMinutes && currentTimeInMinutes < endTimeInMinutes) {
+      return true; // Within business hours
+    }
+  }
+  
+  return false; // Outside all time slots for today
+}
+
+/**
  * POST /twilio/voice/transfer-emergency
  * Emergency call transfer endpoint - returns TwiML to transfer call to emergency contact
  */
@@ -445,6 +489,22 @@ router.post('/voice/test-nourish', async (req, res) => {
 
     console.log(`✅ [TwilioVoice] Test call routed to Nourish Oregon (${businessConfig.businessName})`);
 
+    // Check if business only answers during business hours (Nourish Oregon only)
+    if (businessConfig.features?.onlyAnswerDuringBusinessHours && businessConfig.operatingHours) {
+      const isOpen = checkBusinessHours(businessConfig.operatingHours);
+      if (!isOpen) {
+        console.log(`🕐 [TwilioVoice] Outside business hours for ${businessId}, playing after-hours message`);
+        const twiml = new twilio.twiml.VoiceResponse();
+        const afterHoursMsg = businessConfig.promptConfig?.afterHoursGreeting || 
+          "Thank you for calling. We're currently closed. Please call back during our business hours.";
+        twiml.say(afterHoursMsg);
+        twiml.hangup();
+        res.type('text/xml');
+        return res.send(twiml.toString());
+      }
+      console.log(`✅ [TwilioVoice] Within business hours for ${businessId}, connecting to agent`);
+    }
+
     // Build WebSocket URL with business context
     // Prefer forwarded host when behind proxies (ngrok/load balancer)
     const forwardedHost = req.headers['x-forwarded-host'];
@@ -550,6 +610,22 @@ router.post('/voice', async (req, res) => {
     }
 
     console.log(`✅ [TwilioVoice] Call routed to business: ${businessId} (${businessConfig.businessName})`);
+
+    // Check if business only answers during business hours (applies to businesses with this feature enabled)
+    if (businessConfig.features?.onlyAnswerDuringBusinessHours && businessConfig.operatingHours) {
+      const isOpen = checkBusinessHours(businessConfig.operatingHours);
+      if (!isOpen) {
+        console.log(`🕐 [TwilioVoice] Outside business hours for ${businessId}, playing after-hours message`);
+        const twiml = new twilio.twiml.VoiceResponse();
+        const afterHoursMsg = businessConfig.promptConfig?.afterHoursGreeting || 
+          "Thank you for calling. We're currently closed. Please call back during our business hours.";
+        twiml.say(afterHoursMsg);
+        twiml.hangup();
+        res.type('text/xml');
+        return res.send(twiml.toString());
+      }
+      console.log(`✅ [TwilioVoice] Within business hours for ${businessId}, connecting to agent`);
+    }
 
     // Build WebSocket URL with business context
     // Prefer forwarded host when behind proxies (ngrok/load balancer)
