@@ -81,13 +81,13 @@ class TwilioBridgeService {
       { twilioCallSid: callSid, baseUrl: baseUrl, returnFromTransfer: returnFromTransfer, staffName: staffName }
     );
 
-    // Persist caller/callee phone numbers into session user info for later SMS
+    // Persist caller/callee phone numbers into session
     try {
       if (fromPhone && this.realtimeWSService && this.realtimeWSService.stateManager) {
-        // We do NOT update the session with the caller's phone number automatically
-        // This forces the agent to explicitly ask for the phone number
-        // this.realtimeWSService.stateManager.updateUserInfo(sessionId, { phone: fromPhone });
-        console.log(`📞 [TwilioBridge] Not auto-populating session with caller phone: ${fromPhone}`);
+        // Store caller ID in isolated internal field - agent cannot access this
+        // Only used as fallback AFTER call ends if no phone was collected
+        this.realtimeWSService.stateManager.updateSession(sessionId, { _twilioFallbackPhone: fromPhone });
+        console.log(`📞 [TwilioBridge] Stored Twilio caller ID in isolated internal field: ${fromPhone}`);
       }
       if (toPhone && this.realtimeWSService && this.realtimeWSService.stateManager) {
         this.realtimeWSService.stateManager.updateSession(sessionId, { businessLine: toPhone });
