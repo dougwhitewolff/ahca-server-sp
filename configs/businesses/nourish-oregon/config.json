@@ -59,9 +59,8 @@
     "website": "nourishoregon.com",
     "address": "Oregon",
     "services": [
-      "Drive-up food pickup",
-      "Walk-up food pickup",
-      "Online drive-up orders",
+      "Drive-up food pickup (online ordering available at nourishoregon.com)",
+      "Walk-up food pickup (in-person only, no online ordering)",
       "Doernbecher Children's Hospital partnership"
     ],
     "privateServices": [
@@ -73,7 +72,7 @@
       "driveup_thursday": "10:00 AM - 1:00 PM",
       "walkup_tuesday": "4:00 PM - 7:00 PM",
       "walkup_thursday": "10:00 AM - 1:00 PM",
-      "note": "Online drive-up orders available at nourishoregon.com"
+      "note": "Online orders are ONLY for drive-up pickup at nourishoregon.com (walk-up orders cannot be placed online)"
     },
     "eligibility": {
       "serviceArea": "Oregon and Southeast Washington",
@@ -99,9 +98,10 @@
       },
       "trina": {
         "name": "Trina",
-        "role": "Delivery Team",
+        "role": "Delivery Team (partner deliveries TO Nourish Oregon)",
         "phone": "${NOURISH_OREGON_TRINA_PHONE}",
-        "handles": ["deliveries"]
+        "handles": ["deliveries"],
+        "note": "Handles incoming deliveries from partners (Safeway, etc), NOT customer deliveries"
       },
       "dylan": {
         "name": "Dylan",

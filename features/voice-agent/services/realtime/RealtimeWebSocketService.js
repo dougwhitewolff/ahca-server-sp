@@ -2507,41 +2507,79 @@ Please call ${name} back at ${phone} to address their inquiry.
       const session = this.stateManager.getSession(sessionId);
       const userInfo = session?.userInfo || {};
 
-      // CRITICAL: Check if all required information is collected before allowing call to end
-      // For voicemail sessions, skip confirmation checks (calling collect_voicemail IS the confirmation)
-      let hasName, hasReason, hasPhone;
+      // Get business context to determine if info collection is required
+      const businessId = this.tenantContextManager?.getBusinessId(sessionId);
       
-      if (userInfo.voicemail) {
-        // Voicemail session - just check that data exists
-        hasName = userInfo.name && userInfo.name.trim() !== '';
-        hasReason = userInfo.reason && userInfo.reason.trim() !== '';
-        hasPhone = userInfo.phone && userInfo.phone !== 'client:Anonymous' && userInfo.phone.trim() !== '';
-        console.log('📧 [EndConversation] Voicemail session - using simplified validation');
+      // NOURISH OREGON SPECIFIC: Only require info collection for voicemail scenarios
+      // For simple FAQ calls, allow ending without collecting contact info
+      if (businessId === 'nourish-oregon') {
+        // Only enforce info collection if this is a voicemail session
+        if (userInfo.voicemail) {
+          // Voicemail session - check that data exists
+          const hasName = userInfo.name && userInfo.name.trim() !== '';
+          const hasReason = userInfo.reason && userInfo.reason.trim() !== '';
+          const hasPhone = userInfo.phone && userInfo.phone !== 'client:Anonymous' && userInfo.phone.trim() !== '';
+          console.log('📧 [EndConversation] Nourish Oregon voicemail - checking info');
+          
+          const missingInfo = [];
+          if (!hasName) missingInfo.push('name');
+          if (!hasReason) missingInfo.push('reason');
+          if (!hasPhone) missingInfo.push('phone');
+
+          if (missingInfo.length > 0) {
+            console.log('❌ [EndConversation] Cannot end voicemail - missing:', missingInfo);
+            const missingList = missingInfo.join(', ');
+            return {
+              success: false,
+              conversationEnding: false,
+              error: 'missing_information',
+              message: `🚨 CRITICAL: Cannot end the call yet. You are collecting a voicemail and must get ALL information. Missing: ${missingList}. Please collect the missing information before ending.`,
+              missingInfo: missingInfo
+            };
+          }
+        } else {
+          // NOT a voicemail session - this is a simple FAQ call
+          // Allow ending without collecting contact info
+          console.log('✅ [EndConversation] Nourish Oregon FAQ call - allowing end without info collection');
+        }
       } else {
-        // Regular session - check confirmation flags
-        hasName = userInfo.name && userInfo.nameConfirmed;
-        hasReason = userInfo.reason && userInfo.reason.trim() !== '';
-        hasPhone = userInfo.phone && userInfo.phone !== 'client:Anonymous' && userInfo.phone.trim() !== '' && userInfo.phoneConfirmed;
-      }
+        // OTHER BUSINESSES (Superior Fencing, SherpaPrompt): Always require info collection
+        // CRITICAL: Check if all required information is collected before allowing call to end
+        // For voicemail sessions, skip confirmation checks (calling collect_voicemail IS the confirmation)
+        let hasName, hasReason, hasPhone;
+        
+        if (userInfo.voicemail) {
+          // Voicemail session - just check that data exists
+          hasName = userInfo.name && userInfo.name.trim() !== '';
+          hasReason = userInfo.reason && userInfo.reason.trim() !== '';
+          hasPhone = userInfo.phone && userInfo.phone !== 'client:Anonymous' && userInfo.phone.trim() !== '';
+          console.log('📧 [EndConversation] Voicemail session - using simplified validation');
+        } else {
+          // Regular session - check confirmation flags
+          hasName = userInfo.name && userInfo.nameConfirmed;
+          hasReason = userInfo.reason && userInfo.reason.trim() !== '';
+          hasPhone = userInfo.phone && userInfo.phone !== 'client:Anonymous' && userInfo.phone.trim() !== '' && userInfo.phoneConfirmed;
+        }
 
-      // NOTE: Do NOT check fallback phone here - only check after call has actually ended
-      // This ensures the agent is forced to collect the phone number during the conversation
+        // NOTE: Do NOT check fallback phone here - only check after call has actually ended
+        // This ensures the agent is forced to collect the phone number during the conversation
 
-      const missingInfo = [];
-      if (!hasName) missingInfo.push('name');
-      if (!hasReason) missingInfo.push('reason');
-      if (!hasPhone) missingInfo.push('phone');
+        const missingInfo = [];
+        if (!hasName) missingInfo.push('name');
+        if (!hasReason) missingInfo.push('reason');
+        if (!hasPhone) missingInfo.push('phone');
 
-      if (missingInfo.length > 0) {
-        console.log('❌ [EndConversation] Cannot end call - missing information:', missingInfo);
-        const missingList = missingInfo.join(', ');
-        return {
-          success: false,
-          conversationEnding: false,
-          error: 'missing_information',
-          message: `🚨 CRITICAL: Cannot end the call yet. You must collect ALL required information first. Missing: ${missingList}. Please collect the missing information before ending the conversation. Do NOT end the call until you have collected: name, reason, and phone number.`,
-          missingInfo: missingInfo
-        };
+        if (missingInfo.length > 0) {
+          console.log('❌ [EndConversation] Cannot end call - missing information:', missingInfo);
+          const missingList = missingInfo.join(', ');
+          return {
+            success: false,
+            conversationEnding: false,
+            error: 'missing_information',
+            message: `🚨 CRITICAL: Cannot end the call yet. You must collect ALL required information first. Missing: ${missingList}. Please collect the missing information before ending the conversation. Do NOT end the call until you have collected: name, reason, and phone number.`,
+            missingInfo: missingInfo
+          };
+        }
       }
 
       // All information collected - proceed with ending
@@ -2554,17 +2592,28 @@ Please call ${name} back at ${phone} to address their inquiry.
 
       console.log('👋 [EndConversation] Session marked for closing, user:', userName);
 
-      // Return direct instruction for the agent to say goodbye
-      // Format it as a clear instruction that the AI will follow
-      const goodbyeMessage = userName !== 'there'
-        ? `Thanks for calling, ${userName}! Have a great day!`
-        : `Thanks for calling! Have a great day!`;
+      // BUSINESS-SPECIFIC RETURN MESSAGES
+      if (businessId === 'nourish-oregon') {
+        // NOURISH OREGON: The AI already said goodbye naturally before calling this function,
+        // so we don't need to instruct it to say goodbye again
+        return {
+          success: true,
+          conversationEnding: true,
+          message: `Conversation ending acknowledged. The call will end now.`
+        };
+      } else {
+        // OTHER BUSINESSES: Instruct AI to say goodbye
+        // This is the original behavior that was working before
+        const goodbyeMessage = userName !== 'there'
+          ? `Thanks for calling, ${userName}! Have a great day!`
+          : `Thanks for calling! Have a great day!`;
 
-      return {
-        success: true,
-        conversationEnding: true,
-        message: `The user wants to end the conversation. Say this goodbye message now: "${goodbyeMessage}" Then the conversation will end. Do not ask any questions or say anything else - just say the goodbye message.`
-      };
+        return {
+          success: true,
+          conversationEnding: true,
+          message: `The user wants to end the conversation. Say this goodbye message now: "${goodbyeMessage}" Then the conversation will end. Do not ask any questions or say anything else - just say the goodbye message.`
+        };
+      }
 
     } catch (error) {
       console.error('❌ [EndConversation] Error:', error);

@@ -341,7 +341,7 @@ class NourishOregonHandler {
     if (questionLower.includes('hour') || questionLower.includes('time') || questionLower.includes('when') && questionLower.includes('open')) {
       return {
         success: true,
-        response: "Our drive-up hours are Monday and Tuesday from 4 to 7 PM, and Thursday from 10 AM to 1 PM. Walk-up hours are Tuesday from 4 to 7 PM and Thursday from 10 AM to 1 PM. You can also place online drive-up orders anytime at nourishoregon.com."
+        response: "Our drive-up hours are Monday and Tuesday from 4 to 7 PM, and Thursday from 10 AM to 1 PM. Walk-up hours are Tuesday from 4 to 7 PM and Thursday from 10 AM to 1 PM. You can place online orders for drive-up pickup at nourishoregon.com."
       };
     }
     
@@ -365,19 +365,27 @@ class NourishOregonHandler {
     if (questionLower.includes('service') || questionLower.includes('what do you') || questionLower.includes('what can')) {
       return {
         success: true,
-        response: "We offer drive-up food pickup and walk-up pickup. You can place online drive-up orders at nourishoregon.com. We also partner with Doernbecher Children's Hospital to provide additional support."
+        response: "We offer drive-up food pickup and walk-up pickup. Drive-up orders can be placed online at nourishoregon.com, but walk-up is in-person only. We also partner with Doernbecher Children's Hospital to provide additional support."
+      };
+    }
+    
+    // Delivery questions - clarify we don't deliver to customers
+    if (questionLower.includes('deliver') && !questionLower.includes('safeway') && !questionLower.includes('partner')) {
+      return {
+        success: true,
+        response: "We don't offer delivery to customers. We have drive-up and walk-up pickup available. Drive-up hours are Monday and Tuesday from 4 to 7 PM, and Thursday from 10 AM to 1 PM. Walk-up hours are Tuesday from 4 to 7 PM and Thursday from 10 AM to 1 PM."
+      };
+    }
+    
+    // Online ordering and website clarification
+    if (questionLower.includes('online') || questionLower.includes('website') || questionLower.includes('order')) {
+      return {
+        success: true,
+        response: "You can place online orders for drive-up pickup at nourishoregon.com. Please note that online ordering is only available for drive-up, not walk-up. Walk-up pickup is in-person only."
       };
     }
     
     // Note: Removed pickup to delivery change question - not applicable since we don't offer delivery to clients
-    
-    // Website
-    if (questionLower.includes('website') || questionLower.includes('online')) {
-      return {
-        success: true,
-        response: "You can visit our website at nourishoregon.com to place online drive-up orders and learn more about our services. Remember, online orders are only available for drive-up pickup."
-      };
-    }
     
     // Service area
     if (questionLower.includes('area') || questionLower.includes('where') || questionLower.includes('location')) {
