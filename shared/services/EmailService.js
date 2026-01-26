@@ -402,6 +402,54 @@ Guidelines:
   }
 
   /**
+   * Format transcript dialogues for email display
+   * @param {Array} dialogues - Array of dialogue objects with role, content, timestamp
+   * @returns {Object} Formatted HTML and text versions
+   */
+  formatTranscript(dialogues) {
+    if (!dialogues || !Array.isArray(dialogues) || dialogues.length === 0) {
+      return { html: '', text: '' };
+    }
+
+    const formatTimestamp = (timestamp) => {
+      if (!timestamp) return '';
+      const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
+      return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    };
+
+    const htmlDialogues = dialogues.map(dialogue => {
+      const role = dialogue.role === 'caller' ? 'Caller' : 'Agent';
+      const timestamp = formatTimestamp(dialogue.timestamp);
+      const content = (dialogue.content || '').replace(/\n/g, '<br>');
+      const roleClass = dialogue.role === 'caller' ? 'caller' : 'agent';
+      
+      return `
+        <div class="dialogue ${roleClass}">
+          <div class="dialogue-header">
+            <strong>${role}</strong>
+            ${timestamp ? `<span class="timestamp">${timestamp}</span>` : ''}
+          </div>
+          <div class="dialogue-content">${content}</div>
+        </div>
+      `;
+    }).join('');
+
+    const textDialogues = dialogues.map(dialogue => {
+      const role = dialogue.role === 'caller' ? 'Caller' : 'Agent';
+      const timestamp = formatTimestamp(dialogue.timestamp);
+      const content = dialogue.content || '';
+      const timeStr = timestamp ? ` [${timestamp}]` : '';
+      
+      return `${role}${timeStr}:\n${content}\n`;
+    }).join('\n');
+
+    return {
+      html: htmlDialogues,
+      text: textDialogues
+    };
+  }
+
+  /**
    * Send email via Resend
    * @param {Object} userInfo - User information
    * @param {string} htmlContent - HTML email content
@@ -843,7 +891,7 @@ Guidelines:
    * @param {string} businessName - Business name for email template (optional)
    * @returns {Promise<Object>} Result of email sending
    */
-  async sendConversationSummary(userInfo, conversationHistory, appointmentDetails = null, businessName = null) {
+  async sendConversationSummary(userInfo, conversationHistory, appointmentDetails = null, businessName = null, transcriptData = null, aiSummary = null) {
     if (!this.isReady()) {
       console.error('❌ [EmailService] Email service not initialized');
       return { success: false, error: 'Email service not available' };
@@ -862,6 +910,10 @@ Guidelines:
       
       // Format appointment details if available
       const appointmentHtml = appointmentDetails ? this.formatAppointmentDetails(appointmentDetails) : '';
+
+      // Format transcript and summary if available
+      const transcriptFormatted = transcriptData && transcriptData.dialogues ? this.formatTranscript(transcriptData.dialogues) : { html: '', text: '' };
+      const aiSummaryText = aiSummary || '';
 
       // Create email content
       const userName = userInfo.name || 'Valued Customer';
@@ -901,6 +953,10 @@ Guidelines:
           customerReason = this.extractReasonFromHistory(conversationHistory) || 'General inquiry';
         }
 
+        // Format transcript and summary if available
+        const transcriptFormatted = transcriptData && transcriptData.dialogues ? this.formatTranscript(transcriptData.dialogues) : { html: '', text: '' };
+        const summaryText = aiSummary || '';
+
         const htmlContent = `
 <!DOCTYPE html>
 <html>
@@ -914,6 +970,14 @@ Guidelines:
         .logo { font-size: 24px; font-weight: bold; }
         ul { padding-left: 20px; }
         li { margin: 8px 0; }
+        .summary-section { background-color: #e8f5e8; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #2c5530; }
+        .transcript-section { margin: 20px 0; }
+        .dialogue { margin: 15px 0; padding: 10px; border-radius: 5px; }
+        .dialogue.caller { background-color: #f0f0f0; }
+        .dialogue.agent { background-color: #e8f5e8; }
+        .dialogue-header { display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 14px; }
+        .timestamp { color: #666; font-size: 12px; }
+        .dialogue-content { margin-top: 5px; }
     </style>
 </head>
 <body>
@@ -930,12 +994,26 @@ Guidelines:
             <li><strong>Phone:</strong> ${customerPhone}${phoneSource}</li>
             <li><strong>Reason:</strong> ${customerReason}</li>
         </ul>
+        
+        ${summaryText ? `
+        <div class="summary-section">
+            <h3>📋 Call Summary</h3>
+            <p>${summaryText.replace(/\n/g, '<br>')}</p>
+        </div>
+        ` : ''}
+        
+        ${transcriptFormatted.html ? `
+        <div class="transcript-section">
+            <h3>📝 Full Call Transcript</h3>
+            ${transcriptFormatted.html}
+        </div>
+        ` : ''}
     </div>
 </body>
 </html>
         `.trim();
 
-        const textContent = `
+        let textContent = `
 Superior Fence & Construction
 
 New Customer Inquiry
@@ -945,6 +1023,14 @@ Call Details
 • Phone: ${customerPhone}${phoneSource}
 • Reason: ${customerReason}
         `.trim();
+
+        if (summaryText) {
+          textContent += `\n\nCALL SUMMARY:\n${summaryText}\n`;
+        }
+
+        if (transcriptFormatted.text) {
+          textContent += `\n\nFULL CALL TRANSCRIPT:\n${transcriptFormatted.text}`;
+        }
 
         // Use Microsoft Graph API for Superior Fencing
         if (this.microsoftGraphInitialized) {
@@ -974,6 +1060,14 @@ Call Details
         .content { background-color: #f9f9f9; padding: 20px; border-radius: 0 0 8px 8px; }
         .appointment-section { background-color: #e8f5e8; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #2c5530; }
         .summary-section { margin: 20px 0; }
+        .ai-summary-section { background-color: #e8f5e8; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #2c5530; }
+        .transcript-section { margin: 20px 0; }
+        .dialogue { margin: 15px 0; padding: 10px; border-radius: 5px; }
+        .dialogue.caller { background-color: #f0f0f0; }
+        .dialogue.agent { background-color: #e8f5e8; }
+        .dialogue-header { display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 14px; }
+        .timestamp { color: #666; font-size: 12px; }
+        .dialogue-content { margin-top: 5px; }
         ul { padding-left: 20px; }
         li { margin: 8px 0; }
         .footer { text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; color: #666; font-size: 14px; }
@@ -990,6 +1084,13 @@ Call Details
         <h2>New Customer Inquiry</h2>
         
         <p><strong>${userName}</strong> contacted ${companyName} and left an inquiry. Please reach out to them soon. Details below:</p>
+        
+        ${aiSummaryText ? `
+        <div class="ai-summary-section">
+            <h3>📋 AI-Generated Call Summary</h3>
+            <p>${aiSummaryText.replace(/\n/g, '<br>')}</p>
+        </div>
+        ` : ''}
         
         <div class="summary-section">
             <h3>📋 Conversation Overview</h3>
@@ -1018,6 +1119,12 @@ Call Details
         </div>
         ` : ''}
         
+        ${transcriptFormatted.html ? `
+        <div class="transcript-section">
+            <h3>📝 Full Call Transcript</h3>
+            ${transcriptFormatted.html}
+        </div>
+        ` : ''}
         
     </div>
     
@@ -1029,12 +1136,16 @@ Call Details
 </html>
       `.trim();
 
-      const textContent = `
+      let textContent = `
 NEW CUSTOMER INQUIRY
 
 ${userName} contacted ${companyName} and left an inquiry. Please reach out to them soon. Details below:
 
-CONVERSATION OVERVIEW:
+${aiSummaryText ? `
+AI-GENERATED CALL SUMMARY:
+${aiSummaryText}
+
+` : ''}CONVERSATION OVERVIEW:
 ${summaryData.summary}
 
 KEY POINTS DISCUSSED:
@@ -1066,6 +1177,11 @@ ${summaryData.nextSteps}
 ` : ''}
 
 
+
+${transcriptFormatted.text ? `
+FULL CALL TRANSCRIPT:
+${transcriptFormatted.text}
+` : ''}
 
 We appreciate your interest in our automation services!
 

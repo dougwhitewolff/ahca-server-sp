@@ -6,6 +6,7 @@
 
 const WebSocket = require('ws');
 const EventEmitter = require('events');
+const { CallTranscriptService } = require('../../../../shared/services/CallTranscriptService');
 
 class RealtimeWebSocketService extends EventEmitter {
   constructor(conversationFlowHandler, openAIService, stateManager, businessConfigService = null, tenantContextManager = null, smsService = null) {
@@ -24,6 +25,7 @@ class RealtimeWebSocketService extends EventEmitter {
     this.tenantContextManager = tenantContextManager;
     this.smsService = smsService;
     this.bridgeService = null; // To be injected post-instantiation
+    this.callTranscriptService = new CallTranscriptService();
 
     // Active sessions: sessionId -> { clientWs, openaiWs, state }
     this.sessions = new Map();
@@ -2722,10 +2724,45 @@ Please call ${name} back at ${phone} to address their inquiry.
         }
       }
       
+      // Save call transcript to MongoDB and generate summary
+      let transcriptData = null;
+      let aiSummary = null;
+      if (session && session.conversationHistory && session.conversationHistory.length > 0) {
+        try {
+          console.log('💾 [RealtimeWS] Saving call transcript to MongoDB...');
+          
+          // Generate AI summary from complete conversation history (once, reused for both MongoDB and email)
+          aiSummary = await this.callTranscriptService.generateSummary(session.conversationHistory);
+          
+          // Transform conversation history to dialogues format
+          const dialogues = this.callTranscriptService.transformConversationHistory(session.conversationHistory);
+          
+          // Save transcript to MongoDB (pass summary to avoid generating twice)
+          const saveResult = await this.callTranscriptService.saveCallTranscript(session, sessionData, businessId, aiSummary);
+          
+          if (saveResult.success) {
+            console.log('✅ [RealtimeWS] Transcript saved successfully');
+            transcriptData = {
+              dialogues: dialogues,
+              summary: aiSummary,
+              callerID: saveResult.callerID
+            };
+          } else {
+            console.error('❌ [RealtimeWS] Failed to save transcript:', saveResult.error);
+          }
+        } catch (error) {
+          // Don't block call cleanup if transcript save fails
+          console.error('❌ [RealtimeWS] Error saving transcript (non-blocking):', error.message);
+        }
+      } else {
+        console.log('📝 [RealtimeWS] No conversation history to save for session:', sessionId);
+      }
+      
       // Send conversation summary email
       // Only send if user info was collected or if it's Superior Fencing (fixed email)
       if (session && (session.userInfo?.collected || businessId === 'superior-fencing')) {
-        await this.conversationFlowHandler.sendConversationSummary(sessionId, session)
+        // Pass transcript and summary to email service
+        await this.conversationFlowHandler.sendConversationSummary(sessionId, session, transcriptData, aiSummary)
           .catch(error => {
             console.error('❌ [Email] Failed to send summary:', error);
           });
