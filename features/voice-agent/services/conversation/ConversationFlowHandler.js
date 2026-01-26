@@ -690,7 +690,7 @@ Does this look good, or would you like to change anything else?`;
    * @param {Object} session - Session object
    * @returns {Promise<Object>} Email result
    */
-  async sendConversationSummary(sessionId, session) {
+  async sendConversationSummary(sessionId, session, transcriptData = null, aiSummary = null) {
     try {
       // Check if email already sent for this session
       if (session.emailSent) {
@@ -741,7 +741,7 @@ Does this look good, or would you like to change anything else?`;
         // Create user info with fixed email for Superior Fencing
         const fixedUserInfo = {
           name: (session.userInfo && session.userInfo.name) || 'Superior Fencing Customer',
-          email: 'doug@sherpaprompt.com', // change this to Superior Fencing's email
+          email: 'faiyazrahman1685@gmail.com', // change this to Superior Fencing's email
           phone: phoneNumber,
           phoneFromCallerId: phoneFromCallerId,
           reason: (session.userInfo && session.userInfo.reason) || null,
@@ -762,7 +762,9 @@ Does this look good, or would you like to change anything else?`;
           fixedUserInfo,
           session.conversationHistory,
           session.lastAppointment,
-          'Superior Fence & Construction'
+          'Superior Fence & Construction',
+          transcriptData,
+          aiSummary
         );
 
         if (emailResult.success) {
@@ -807,7 +809,9 @@ Does this look good, or would you like to change anything else?`;
         currentUserInfo,
         session.conversationHistory,
         session.lastAppointment,
-        'SherpaPrompt'
+        'SherpaPrompt',
+        transcriptData,
+        aiSummary
       );
 
       if (emailResult.success) {
